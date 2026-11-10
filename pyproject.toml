@@ -1,0 +1,29 @@
+[project]
+name = "admin-to-power-user"
+version = "0.1.0"
+description = "Read-only: predict what breaks when workspace admins move to a power_users group, and recommend fixes"
+requires-python = ">=3.10"
+dependencies = [
+    "databricks-sdk>=0.40.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+admin-to-power-user = "admin_to_power_user.main:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+admin_to_power_user = ["dashboard.lvdash.json"]

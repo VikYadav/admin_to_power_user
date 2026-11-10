@@ -1,0 +1,889 @@
+{
+ "datasets": [
+  {
+   "name": "items",
+   "displayName": "What breaks and how to fix it",
+   "queryLines": [
+    "WITH latest AS (SELECT workspace_id, max_by(run_id, run_ts) AS run_id FROM `__CATALOG__`.`__SCHEMA__`.runs GROUP BY workspace_id)\n",
+    "SELECT d.workspace_id,\n",
+    "  CASE WHEN d.covered_by IS NOT NULL THEN 'Fixed by your permission set'\n",
+    "       WHEN d.breaks AND d.severity IN ('BLOCKER', 'HIGH') THEN 'Breaks - high impact'\n",
+    "       WHEN d.breaks THEN 'Breaks - lower impact' ELSE 'Keeps working - review' END AS status,\n",
+    "  d.severity,\n",
+    "  CASE d.severity WHEN 'BLOCKER' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 WHEN 'LOW' THEN 4 ELSE 5 END AS severity_order,\n",
+    "  regexp_replace(d.principal, '^(user|sp|group):', '') AS person,\n",
+    "  CASE d.kind WHEN 'RUN_AS_DEPENDENCY' THEN 'Job or pipeline running as this person'\n",
+    "    WHEN 'DIRECT_USE' THEN 'Access this person used' WHEN 'ENTITLEMENT' THEN 'Workspace entitlement'\n",
+    "    WHEN 'ADMIN_ONLY_ACTION' THEN 'Admin-only task' WHEN 'TOKEN' THEN 'Personal access token'\n",
+    "    WHEN 'UC_PRIVILEGE' THEN 'Unity Catalog privilege' WHEN 'OWNERSHIP_RISK' THEN 'Owned by a person'\n",
+    "    WHEN 'NO_ADMIN_LEFT' THEN 'No admin left' ELSE d.kind END AS what_breaks,\n",
+    "  concat(d.object_type, ': ', coalesce(d.object_name, d.object_id)) AS object,\n",
+    "  coalesce(concat(d.artifact_type, ': ', d.artifact_name), '') AS used_by,\n",
+    "  d.via AS why,\n",
+    "  CASE r.bucket WHEN 'POWER_USERS_GRANT' THEN 'Grant to power_users' WHEN 'MOVE_TO_SP' THEN 'Move to a service principal'\n",
+    "    WHEN 'PROCESS_CHANGE' THEN 'Central team process' WHEN 'COVERED' THEN 'Nothing to do' ELSE r.bucket END AS fix_type,\n",
+    "  r.primary_action AS fix, r.alternative_action AS alternative, d.usage_count AS times_used, d.last_used,\n",
+    "  CASE WHEN d.covered_by IS NULL AND d.breaks THEN 1 ELSE 0 END AS n_breaks,\n",
+    "  CASE WHEN d.covered_by IS NULL AND d.breaks AND d.severity IN ('BLOCKER', 'HIGH') THEN 1 ELSE 0 END AS n_high,\n",
+    "  CASE WHEN d.covered_by IS NULL AND d.breaks AND NOT d.severity IN ('BLOCKER', 'HIGH') THEN 1 ELSE 0 END AS n_lower,\n",
+    "  CASE WHEN d.covered_by IS NOT NULL THEN 1 ELSE 0 END AS n_fixed,\n",
+    "  CASE WHEN d.covered_by IS NULL AND NOT d.breaks THEN 1 ELSE 0 END AS n_review\n",
+    "FROM `__CATALOG__`.`__SCHEMA__`.deltas d JOIN latest l ON d.workspace_id = l.workspace_id AND d.run_id = l.run_id\n",
+    "JOIN `__CATALOG__`.`__SCHEMA__`.recommendations r ON r.delta_id = d.delta_id AND r.run_id = d.run_id AND r.workspace_id = d.workspace_id\n",
+    "ORDER BY severity_order, d.usage_count DESC\n"
+   ]
+  },
+  {
+   "name": "run",
+   "displayName": "About this run",
+   "queryLines": [
+    "WITH latest AS (SELECT workspace_id, max_by(run_id, run_ts) AS run_id FROM `__CATALOG__`.`__SCHEMA__`.runs GROUP BY workspace_id)\n",
+    "SELECT t.workspace_id, t.workspace_host, t.run_ts, s.status, t.retained_admins AS stays_admin,\n",
+    "  s.admins_in_scope AS admins_moving, s.humans_in_scope AS humans_moving, t.warnings\n",
+    "FROM `__CATALOG__`.`__SCHEMA__`.runs t JOIN latest l ON t.workspace_id = l.workspace_id AND t.run_id = l.run_id\n",
+    "JOIN `__CATALOG__`.`__SCHEMA__`.readiness_summary s ON s.workspace_id = t.workspace_id AND s.run_id = t.run_id\n"
+   ]
+  }
+ ],
+ "pages": [
+  {
+   "name": "fad58de7",
+   "displayName": "Readiness",
+   "pageType": "PAGE_TYPE_CANVAS",
+   "layout": [
+    {
+     "widget": {
+      "name": "e84ce04d",
+      "multilineTextboxSpec": {
+       "lines": [
+        "## What breaks when admins move to power_users, and how to fix it\n",
+        "Each row is one thing a current admin would lose. Start with **Breaks - high impact**, then use the filters."
+       ]
+      }
+     },
+     "position": {
+      "x": 0,
+      "y": 0,
+      "width": 8,
+      "height": 2
+     }
+    },
+    {
+     "widget": {
+      "name": "45c9650e",
+      "queries": [
+       {
+        "name": "filter_45c9650e_items",
+        "query": {
+         "datasetName": "items",
+         "fields": [
+          {
+           "name": "workspace_id",
+           "expression": "`workspace_id`"
+          },
+          {
+           "name": "workspace_id_associativity",
+           "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+          }
+         ],
+         "disaggregated": false
+        }
+       },
+       {
+        "name": "filter_45c9650e_run",
+        "query": {
+         "datasetName": "run",
+         "fields": [
+          {
+           "name": "workspace_id",
+           "expression": "`workspace_id`"
+          },
+          {
+           "name": "workspace_id_associativity",
+           "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+          }
+         ],
+         "disaggregated": false
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "filter-single-select",
+       "encodings": {
+        "fields": [
+         {
+          "fieldName": "workspace_id",
+          "displayName": "Workspace",
+          "queryName": "filter_45c9650e_items"
+         },
+         {
+          "fieldName": "workspace_id",
+          "displayName": "Workspace",
+          "queryName": "filter_45c9650e_run"
+         }
+        ]
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "Workspace"
+       }
+      }
+     },
+     "position": {
+      "x": 8,
+      "y": 0,
+      "width": 4,
+      "height": 1
+     }
+    },
+    {
+     "widget": {
+      "name": "bfcef8f4",
+      "queries": [
+       {
+        "name": "filter_bfcef8f4_items",
+        "query": {
+         "datasetName": "items",
+         "fields": [
+          {
+           "name": "status",
+           "expression": "`status`"
+          },
+          {
+           "name": "status_associativity",
+           "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+          }
+         ],
+         "disaggregated": false
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "filter-multi-select",
+       "encodings": {
+        "fields": [
+         {
+          "fieldName": "status",
+          "displayName": "Status",
+          "queryName": "filter_bfcef8f4_items"
+         }
+        ]
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "Status"
+       }
+      }
+     },
+     "position": {
+      "x": 0,
+      "y": 2,
+      "width": 3,
+      "height": 1
+     }
+    },
+    {
+     "widget": {
+      "name": "521aa852",
+      "queries": [
+       {
+        "name": "filter_521aa852_items",
+        "query": {
+         "datasetName": "items",
+         "fields": [
+          {
+           "name": "what_breaks",
+           "expression": "`what_breaks`"
+          },
+          {
+           "name": "what_breaks_associativity",
+           "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+          }
+         ],
+         "disaggregated": false
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "filter-multi-select",
+       "encodings": {
+        "fields": [
+         {
+          "fieldName": "what_breaks",
+          "displayName": "What breaks",
+          "queryName": "filter_521aa852_items"
+         }
+        ]
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "What breaks"
+       }
+      }
+     },
+     "position": {
+      "x": 3,
+      "y": 2,
+      "width": 3,
+      "height": 1
+     }
+    },
+    {
+     "widget": {
+      "name": "392bb8e1",
+      "queries": [
+       {
+        "name": "filter_392bb8e1_items",
+        "query": {
+         "datasetName": "items",
+         "fields": [
+          {
+           "name": "person",
+           "expression": "`person`"
+          },
+          {
+           "name": "person_associativity",
+           "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+          }
+         ],
+         "disaggregated": false
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "filter-multi-select",
+       "encodings": {
+        "fields": [
+         {
+          "fieldName": "person",
+          "displayName": "Person",
+          "queryName": "filter_392bb8e1_items"
+         }
+        ]
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "Person"
+       }
+      }
+     },
+     "position": {
+      "x": 6,
+      "y": 2,
+      "width": 3,
+      "height": 1
+     }
+    },
+    {
+     "widget": {
+      "name": "18923aab",
+      "queries": [
+       {
+        "name": "filter_18923aab_items",
+        "query": {
+         "datasetName": "items",
+         "fields": [
+          {
+           "name": "fix_type",
+           "expression": "`fix_type`"
+          },
+          {
+           "name": "fix_type_associativity",
+           "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+          }
+         ],
+         "disaggregated": false
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "filter-multi-select",
+       "encodings": {
+        "fields": [
+         {
+          "fieldName": "fix_type",
+          "displayName": "Fix type",
+          "queryName": "filter_18923aab_items"
+         }
+        ]
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "Fix type"
+       }
+      }
+     },
+     "position": {
+      "x": 9,
+      "y": 2,
+      "width": 3,
+      "height": 1
+     }
+    },
+    {
+     "widget": {
+      "name": "50b4c66e",
+      "queries": [
+       {
+        "name": "main_query",
+        "query": {
+         "datasetName": "items",
+         "fields": [
+          {
+           "name": "sum(n_high)",
+           "expression": "SUM(`n_high`)"
+          }
+         ],
+         "disaggregated": false
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "counter",
+       "encodings": {
+        "value": {
+         "fieldName": "sum(n_high)",
+         "displayName": "Breaks - high impact"
+        }
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "Breaks - high impact"
+       }
+      }
+     },
+     "position": {
+      "x": 0,
+      "y": 3,
+      "width": 3,
+      "height": 2
+     }
+    },
+    {
+     "widget": {
+      "name": "882bd20a",
+      "queries": [
+       {
+        "name": "main_query",
+        "query": {
+         "datasetName": "items",
+         "fields": [
+          {
+           "name": "sum(n_lower)",
+           "expression": "SUM(`n_lower`)"
+          }
+         ],
+         "disaggregated": false
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "counter",
+       "encodings": {
+        "value": {
+         "fieldName": "sum(n_lower)",
+         "displayName": "Breaks - lower impact"
+        }
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "Breaks - lower impact"
+       }
+      }
+     },
+     "position": {
+      "x": 3,
+      "y": 3,
+      "width": 3,
+      "height": 2
+     }
+    },
+    {
+     "widget": {
+      "name": "f7a3dfc9",
+      "queries": [
+       {
+        "name": "main_query",
+        "query": {
+         "datasetName": "items",
+         "fields": [
+          {
+           "name": "sum(n_fixed)",
+           "expression": "SUM(`n_fixed`)"
+          }
+         ],
+         "disaggregated": false
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "counter",
+       "encodings": {
+        "value": {
+         "fieldName": "sum(n_fixed)",
+         "displayName": "Fixed by your permission set"
+        }
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "Fixed by your permission set"
+       }
+      }
+     },
+     "position": {
+      "x": 6,
+      "y": 3,
+      "width": 3,
+      "height": 2
+     }
+    },
+    {
+     "widget": {
+      "name": "371adc79",
+      "queries": [
+       {
+        "name": "main_query",
+        "query": {
+         "datasetName": "items",
+         "fields": [
+          {
+           "name": "sum(n_review)",
+           "expression": "SUM(`n_review`)"
+          }
+         ],
+         "disaggregated": false
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "counter",
+       "encodings": {
+        "value": {
+         "fieldName": "sum(n_review)",
+         "displayName": "Keeps working - review"
+        }
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "Keeps working - review"
+       }
+      }
+     },
+     "position": {
+      "x": 9,
+      "y": 3,
+      "width": 3,
+      "height": 2
+     }
+    },
+    {
+     "widget": {
+      "name": "2133554b",
+      "queries": [
+       {
+        "name": "main_query",
+        "query": {
+         "datasetName": "items",
+         "fields": [
+          {
+           "name": "fix_type",
+           "expression": "`fix_type`"
+          },
+          {
+           "name": "severity",
+           "expression": "`severity`"
+          },
+          {
+           "name": "sum(n_breaks)",
+           "expression": "SUM(`n_breaks`)"
+          }
+         ],
+         "disaggregated": false
+        }
+       }
+      ],
+      "spec": {
+       "version": 3,
+       "widgetType": "bar",
+       "encodings": {
+        "x": {
+         "fieldName": "fix_type",
+         "scale": {
+          "type": "categorical",
+          "sort": {
+           "by": "y-reversed"
+          }
+         },
+         "displayName": "Fix type"
+        },
+        "y": {
+         "fieldName": "sum(n_breaks)",
+         "scale": {
+          "type": "quantitative"
+         },
+         "displayName": "Breaks"
+        },
+        "color": {
+         "fieldName": "severity",
+         "scale": {
+          "type": "categorical",
+          "mappings": [
+           {
+            "value": "BLOCKER",
+            "color": "#FF3621"
+           },
+           {
+            "value": "HIGH",
+            "color": "#FF8A4C"
+           },
+           {
+            "value": "MEDIUM",
+            "color": "#FFAB00"
+           },
+           {
+            "value": "LOW",
+            "color": "#919191"
+           }
+          ]
+         },
+         "displayName": "Severity"
+        }
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "Open breaks by fix type"
+       }
+      }
+     },
+     "position": {
+      "x": 0,
+      "y": 5,
+      "width": 6,
+      "height": 5
+     }
+    },
+    {
+     "widget": {
+      "name": "5ad5a1ff",
+      "queries": [
+       {
+        "name": "main_query",
+        "query": {
+         "datasetName": "items",
+         "fields": [
+          {
+           "name": "person",
+           "expression": "`person`"
+          },
+          {
+           "name": "severity",
+           "expression": "`severity`"
+          },
+          {
+           "name": "sum(n_breaks)",
+           "expression": "SUM(`n_breaks`)"
+          }
+         ],
+         "disaggregated": false
+        }
+       }
+      ],
+      "spec": {
+       "version": 3,
+       "widgetType": "bar",
+       "encodings": {
+        "x": {
+         "fieldName": "person",
+         "scale": {
+          "type": "categorical",
+          "sort": {
+           "by": "y-reversed"
+          }
+         },
+         "displayName": "Person"
+        },
+        "y": {
+         "fieldName": "sum(n_breaks)",
+         "scale": {
+          "type": "quantitative"
+         },
+         "displayName": "Breaks"
+        },
+        "color": {
+         "fieldName": "severity",
+         "scale": {
+          "type": "categorical",
+          "mappings": [
+           {
+            "value": "BLOCKER",
+            "color": "#FF3621"
+           },
+           {
+            "value": "HIGH",
+            "color": "#FF8A4C"
+           },
+           {
+            "value": "MEDIUM",
+            "color": "#FFAB00"
+           },
+           {
+            "value": "LOW",
+            "color": "#919191"
+           }
+          ]
+         },
+         "displayName": "Severity"
+        }
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "Who is affected most"
+       }
+      }
+     },
+     "position": {
+      "x": 6,
+      "y": 5,
+      "width": 6,
+      "height": 5
+     }
+    },
+    {
+     "widget": {
+      "name": "bc461baa",
+      "queries": [
+       {
+        "name": "main_query",
+        "query": {
+         "datasetName": "items",
+         "fields": [
+          {
+           "name": "status",
+           "expression": "`status`"
+          },
+          {
+           "name": "severity",
+           "expression": "`severity`"
+          },
+          {
+           "name": "person",
+           "expression": "`person`"
+          },
+          {
+           "name": "what_breaks",
+           "expression": "`what_breaks`"
+          },
+          {
+           "name": "object",
+           "expression": "`object`"
+          },
+          {
+           "name": "used_by",
+           "expression": "`used_by`"
+          },
+          {
+           "name": "why",
+           "expression": "`why`"
+          },
+          {
+           "name": "fix_type",
+           "expression": "`fix_type`"
+          },
+          {
+           "name": "fix",
+           "expression": "`fix`"
+          },
+          {
+           "name": "alternative",
+           "expression": "`alternative`"
+          },
+          {
+           "name": "times_used",
+           "expression": "`times_used`"
+          },
+          {
+           "name": "last_used",
+           "expression": "`last_used`"
+          }
+         ],
+         "disaggregated": true
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "table",
+       "encodings": {
+        "columns": [
+         {
+          "fieldName": "status",
+          "displayName": "Status"
+         },
+         {
+          "fieldName": "severity",
+          "displayName": "Severity"
+         },
+         {
+          "fieldName": "person",
+          "displayName": "Person"
+         },
+         {
+          "fieldName": "what_breaks",
+          "displayName": "What breaks"
+         },
+         {
+          "fieldName": "object",
+          "displayName": "Object"
+         },
+         {
+          "fieldName": "used_by",
+          "displayName": "Used by"
+         },
+         {
+          "fieldName": "why",
+          "displayName": "Why"
+         },
+         {
+          "fieldName": "fix_type",
+          "displayName": "Fix type"
+         },
+         {
+          "fieldName": "fix",
+          "displayName": "Fix"
+         },
+         {
+          "fieldName": "alternative",
+          "displayName": "Alternative"
+         },
+         {
+          "fieldName": "times_used",
+          "displayName": "Times used"
+         },
+         {
+          "fieldName": "last_used",
+          "displayName": "Last used"
+         }
+        ]
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "What breaks and how to fix it"
+       },
+       "data": {
+        "queryName": "main_query"
+       }
+      }
+     },
+     "position": {
+      "x": 0,
+      "y": 10,
+      "width": 12,
+      "height": 12
+     }
+    },
+    {
+     "widget": {
+      "name": "a4c9eb6c",
+      "queries": [
+       {
+        "name": "main_query",
+        "query": {
+         "datasetName": "run",
+         "fields": [
+          {
+           "name": "workspace_host",
+           "expression": "`workspace_host`"
+          },
+          {
+           "name": "run_ts",
+           "expression": "`run_ts`"
+          },
+          {
+           "name": "status",
+           "expression": "`status`"
+          },
+          {
+           "name": "stays_admin",
+           "expression": "`stays_admin`"
+          },
+          {
+           "name": "admins_moving",
+           "expression": "`admins_moving`"
+          },
+          {
+           "name": "humans_moving",
+           "expression": "`humans_moving`"
+          },
+          {
+           "name": "warnings",
+           "expression": "`warnings`"
+          }
+         ],
+         "disaggregated": true
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "table",
+       "encodings": {
+        "columns": [
+         {
+          "fieldName": "workspace_host",
+          "displayName": "Workspace"
+         },
+         {
+          "fieldName": "run_ts",
+          "displayName": "Analyzed at"
+         },
+         {
+          "fieldName": "status",
+          "displayName": "Readiness"
+         },
+         {
+          "fieldName": "stays_admin",
+          "displayName": "Stays admin"
+         },
+         {
+          "fieldName": "admins_moving",
+          "displayName": "Admins moving"
+         },
+         {
+          "fieldName": "humans_moving",
+          "displayName": "Humans moving"
+         },
+         {
+          "fieldName": "warnings",
+          "displayName": "Warnings"
+         }
+        ]
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "About this run"
+       },
+       "data": {
+        "queryName": "main_query"
+       }
+      }
+     },
+     "position": {
+      "x": 0,
+      "y": 22,
+      "width": 12,
+      "height": 3
+     }
+    }
+   ]
+  }
+ ]
+}

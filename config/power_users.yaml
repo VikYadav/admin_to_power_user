@@ -1,0 +1,53 @@
+# power_users = what workspace admins can do today, minus the centrally owned features
+# (workspace settings, IP access lists, personnel access, AI features, previews: see
+# docs/power_users_permission_model.md). Everything that can be granted to a group is granted here.
+# Run with: admin-to-power-user ... --permissions config/power_users.yaml
+#
+# "*" means every object of that type. When the central team applies this for real, leave out the objects
+# that belong to the admin SP (jobs/pipelines that run as it, its notebooks/repos, secret scopes holding its
+# credentials). Otherwise a power user could edit them and make the admin SP change the locked settings.
+
+# Entitlements: everything admins have today.
+- workspace-access
+- databricks-sql-access
+- allow-cluster-create
+- allow-instance-pool-create
+
+# Personal access tokens: power users may create and use their own PATs while enableTokensConfig is on.
+# (Who may use PATs, i.e. CAN_MANAGE on token usage, stays with the central team: it is a token setting.)
+- token-usage
+
+# Compute
+- CAN_MANAGE clusters *
+- CAN_MANAGE instance-pools *
+- CAN_USE cluster-policies *          # policies have only CAN_USE; creating/editing them is admin-only
+- CAN_MANAGE warehouses *
+
+# Workflows and code
+- CAN_MANAGE jobs *
+- CAN_MANAGE pipelines *
+- CAN_MANAGE /                        # the whole workspace tree (see the report for users' home folders)
+
+# SQL and BI objects
+- CAN_MANAGE queries *
+- CAN_MANAGE alerts *
+- CAN_MANAGE dashboards *
+
+# ML and apps
+- CAN_MANAGE experiments *
+- CAN_MANAGE registered-models *
+- CAN_MANAGE serving-endpoints *
+- CAN_MANAGE apps *
+
+# Secrets
+- MANAGE secret-scopes *
+
+# Unity Catalog metastore privileges admins use today. These are metastore-wide: they apply to every
+# workspace attached to the same metastore, not just this one.
+- CREATE_CATALOG
+- CREATE_EXTERNAL_LOCATION
+- CREATE_STORAGE_CREDENTIAL
+- CREATE_CONNECTION
+- CREATE_SHARE
+- CREATE_RECIPIENT
+- CREATE_PROVIDER

@@ -6,6 +6,9 @@ publishes a dashboard over them.
 
 The analysis client can only read. A separate output client can only write tables in <catalog>.<schema> and
 the tool's own dashboard (see readonly.py).
+
+With --home-profile (or --home-host) the results go to another workspace: the target only gets GET calls, and
+the system-table queries, output tables and dashboard all use the home workspace and its warehouse.
 """
 
 from __future__ import annotations
@@ -80,7 +83,8 @@ def _optional(snapshot: Snapshot, label: str, fn, *args) -> None:
         snapshot.warnings.append(f"{label} skipped: {e}")
 
 
-def collect(w, cfg: Config, warehouse_id: str) -> Snapshot:
+def collect(w, cfg: Config, warehouse_id: str, home=None) -> Snapshot:
+    """`w` is the target (REST reads only). System tables are read through `home` (default: the target)."""
     snapshot = Snapshot(str(w.get_workspace_id()), w.config.host)
     collect_identities(w, snapshot, cfg)
     names = NameResolver(snapshot)
@@ -90,13 +94,24 @@ def collect(w, cfg: Config, warehouse_id: str) -> Snapshot:
     _optional(snapshot, "pipelines", collect_pipelines, w, snapshot, cfg, names)
     collect_sql_objects(w, snapshot, cfg, names)
     _optional(snapshot, "notebook scan", scan_notebooks, w, snapshot, cfg, targets)
-    Usage(WarehouseRunner(w, warehouse_id), snapshot, names, cfg.lookback_days).collect(cfg.admin_only_actions)
+    usage = Usage(WarehouseRunner(home or w, warehouse_id), snapshot, names, cfg.lookback_days)
+    if home is not None and home is not w:
+        _optional(snapshot, "audit visibility check", _check_audit_visible, usage, snapshot, home)
+    usage.collect(cfg.admin_only_actions)
     collect_uc(w, snapshot, names)
     _optional(snapshot, "tokens (needs workspace admin)", collect_tokens, w, snapshot, names)
     collect_acls(w, snapshot, cfg, names)
     print(f"[collect] {len(snapshot.dependencies)} dependencies, {len(snapshot.acls)} ACLs, "
           f"{len(snapshot.tokens)} tokens")
     return snapshot
+
+
+def _check_audit_visible(usage: Usage, snapshot: Snapshot, home) -> None:
+    if not usage.audit_visible():
+        snapshot.warnings.append(
+            f"{home.config.host} sees no audit events for workspace {snapshot.workspace_id} in the last "
+            f"{usage.days} days. system.access.audit is regional: run from a results workspace in the same region "
+            f"as the target, or usage evidence is missing and severities are understated")
 
 
 def principal_rows(snapshot: Snapshot, cfg: Config) -> list[PrincipalRow]:
@@ -166,7 +181,9 @@ def resolve_warehouse(w, warehouse_id: str | None) -> str:
 
 def analyze(args: argparse.Namespace) -> int:
     cfg = apply_overrides(Config(), args)
-    w = workspace_client(cfg, cfg.workspace_host, args.profile)
+    split = bool(args.home_profile or args.home_host)
+    w = workspace_client(cfg, cfg.workspace_host, args.profile, sql=not split)  # split: GET/HEAD only
+    home = workspace_client(cfg, args.home_host, args.home_profile) if split else w
     me = w.current_user.me().user_name or ""
     if not cfg.all_retained():
         if not UUID.match(me):
@@ -180,16 +197,21 @@ def analyze(args: argparse.Namespace) -> int:
     if cfg.workspace_id and cfg.workspace_id != ws_id:
         raise SystemExit(f"Connected to workspace {ws_id} ({w.config.host}) but --workspace-id is "
                          f"{cfg.workspace_id}. Check --workspace-host / --profile.")
-    warehouse_id = resolve_warehouse(w, args.warehouse_id)
-    folder = args.dashboard_folder or f"/Users/{me}"
+    home_id = str(home.get_workspace_id()) if split else ws_id
+    if split:
+        print(f"[target] {w.config.host} (workspace {ws_id}): read-only, no SQL")
+        print(f"[results] {home.config.host} (workspace {home_id}): warehouse, output tables and dashboard")
+    warehouse_id = resolve_warehouse(home, args.warehouse_id)
+    home_me = (home.current_user.me().user_name or "") if split else me
+    folder = args.dashboard_folder or f"/Users/{home_me}"
     scope = WriteScope(args.catalog, args.schema, folder)
-    ww = output_client(w, scope)
+    ww = output_client(home, scope)
     run_id = uuid.uuid4().hex[:12]
     meta = {"run_id": run_id, "run_ts": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             "workspace_id": ws_id}
     sink = UcSink(ww, warehouse_id, args.catalog, args.schema, meta, args.mode)  # fails fast if not writable
 
-    snapshot = collect(w, cfg, warehouse_id)
+    snapshot = collect(w, cfg, warehouse_id, home)
     deltas, cov = simulate(snapshot, cfg)
     recs = recommend_all(deltas)
     by_id = {d.delta_id: d for d in deltas}
@@ -248,7 +270,10 @@ def analyze(args: argparse.Namespace) -> int:
         print(f"warning: {warning}")
     print(f"results: {args.catalog}.{args.schema} (run {run_id}, {args.mode})")
     print(f"dashboard: {url}")
-    print("Nothing else in the workspace was changed.")
+    if home_id != ws_id:
+        print(f"Nothing was created or run in {snapshot.workspace_host}: it only received read calls.")
+    else:
+        print("Nothing else in the workspace was changed.")
     return 0
 
 
@@ -268,12 +293,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--permissions", default=None, help="YAML list of power_users permissions (optional)")
     p.add_argument("--assume-moved", action="append", metavar="TYPE:ID",
                    help="treat job:<id> / pipeline:<id> / token:<id> / query:<id> as already moved to an SP")
-    p.add_argument("--warehouse-id", default=None, help="SQL warehouse for system tables (default: auto)")
+    p.add_argument("--warehouse-id", default=None,
+                   help="SQL warehouse for system tables and output, in the results workspace (default: auto)")
     p.add_argument("--lookback-days", type=int, default=None, help="usage window (default: 90)")
     p.add_argument("--power-users-group", default=None, help="default: power_users")
     p.add_argument("--workspace-host", default=None, help="default: the profile's workspace")
     p.add_argument("--workspace-id", default=None, help="expected workspace id (safety check)")
-    p.add_argument("--dashboard-folder", default=None, help="workspace folder for the dashboard (default: your home)")
+    p.add_argument("--home-profile", default=None,
+                   help="~/.databrickscfg profile of the results workspace: runs the SQL and gets the tables and "
+                        "dashboard, so nothing is created in the target (default: the target)")
+    p.add_argument("--home-host", default=None, help="results workspace host (overrides --home-profile's host)")
+    p.add_argument("--dashboard-folder", default=None,
+                   help="folder for the dashboard in the results workspace (default: your home folder there)")
     p.add_argument("--dashboard-name", default=DEFAULT_NAME)
     p.add_argument("--admin-client-id", action="append", help=argparse.SUPPRESS)
     p.add_argument("--admin-group", action="append", help=argparse.SUPPRESS)

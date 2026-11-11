@@ -3,7 +3,8 @@
 Two clients are used, each wrapped before any request is sent:
 
 * `make_read_only(w)`: the analysis client. Only GET/HEAD, plus single SELECT/WITH statements through the
-  SQL Statement Execution API (system tables). Everything else is refused.
+  SQL Statement Execution API (system tables). Everything else is refused. With `allow_sql=False` (the target
+  client when results go to another workspace) SQL is refused too, so only GET/HEAD reach the target.
 * `make_output_only(w, scope)`: the output client. On top of reads it may only
   - create the output schema, create/alter tables in it, insert rows (VALUES only) and delete old rows,
     all inside `catalog`.`schema`;
@@ -114,11 +115,14 @@ def _norm_folder(path: str) -> str:
     return path[len("/Workspace"):] if path.startswith("/Workspace/") else path
 
 
-def check_request(method: str, path: Optional[str], body: Optional[dict], scope: Optional[WriteScope] = None) -> None:
+def check_request(method: str, path: Optional[str], body: Optional[dict], scope: Optional[WriteScope] = None,
+                  allow_sql: bool = True) -> None:
     m = (method or "").upper()
     path = (path or "").rstrip("/")
     if m in READ_METHODS:
         return
+    if m == "POST" and path == SQL_STATEMENT_PATH and not allow_sql:
+        raise ReadOnlyViolation("Refusing SQL on the target workspace: queries run in the results workspace")
     if m == "POST" and path == SQL_STATEMENT_PATH:
         sql = (body or {}).get("statement") or ""
         if is_read_only_sql(sql) or (scope is not None and is_output_sql(sql, scope)):
@@ -138,14 +142,14 @@ def check_request(method: str, path: Optional[str], body: Optional[dict], scope:
     raise ReadOnlyViolation(f"Refusing {m} {path}: {what}")
 
 
-def _wrap(w, scope: Optional[WriteScope]):
+def _wrap(w, scope: Optional[WriteScope], allow_sql: bool = True):
     api = w.api_client
     if getattr(api, "_admin_to_power_user_guard", False):
         return w
     original = api.do
 
     def do(method, path=None, url=None, query=None, headers=None, body=None, *args, **kwargs):
-        check_request(method, path or url, body, scope)
+        check_request(method, path or url, body, scope, allow_sql)
         return original(method, path, url, query, headers, body, *args, **kwargs)
 
     api.do = do
@@ -153,9 +157,9 @@ def _wrap(w, scope: Optional[WriteScope]):
     return w
 
 
-def make_read_only(w):
-    """Patch the client in place so it can only read. Returns the same client."""
-    return _wrap(w, None)
+def make_read_only(w, allow_sql: bool = True):
+    """Patch the client in place so it can only read (GET/HEAD only if allow_sql=False). Returns the same client."""
+    return _wrap(w, None, allow_sql)
 
 
 def make_output_only(w, scope: WriteScope):

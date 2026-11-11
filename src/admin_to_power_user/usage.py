@@ -105,6 +105,13 @@ class Usage:
             except Exception as e:
                 self.s.warnings.append(f"Usage query '{label}' failed (check system table access): {e}")
 
+    def audit_visible(self) -> bool:
+        """True if the warehouse's workspace sees this workspace's audit events (system.access.audit is regional)."""
+        rows = self.r.query(f"""
+            SELECT COUNT(*) AS n FROM system.access.audit
+            WHERE {_window(self.s.workspace_id, self.days)}""")
+        return bool(rows) and int(rows[0]["n"]) > 0
+
     def job_runs(self) -> None:
         rows = self.r.query(f"""
             SELECT CAST(job_id AS STRING) AS job_id, COUNT(DISTINCT run_id) AS runs,

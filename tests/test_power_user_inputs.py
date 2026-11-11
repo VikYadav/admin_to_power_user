@@ -171,6 +171,19 @@ def test_make_read_only_blocks_before_sending():
     assert len(sent) == 1
 
 
+def test_target_client_without_sql_only_reads():
+    check_request("GET", "/api/2.1/jobs/list", None, allow_sql=False)
+    with pytest.raises(ReadOnlyViolation, match="target workspace"):
+        check_request("POST", "/api/2.0/sql/statements", {"statement": "SELECT 1"}, allow_sql=False)
+    sent = []
+    api = SimpleNamespace(do=lambda *a, **k: sent.append(a) or {})
+    w = make_read_only(SimpleNamespace(api_client=api), allow_sql=False)
+    w.api_client.do("GET", "/api/2.0/clusters/list")
+    with pytest.raises(ReadOnlyViolation):
+        w.api_client.do("POST", "/api/2.0/sql/statements", body={"statement": "SELECT 1"})
+    assert len(sent) == 1
+
+
 def test_every_usage_query_passes_the_guard(snapshot):
     seen = []
 
@@ -191,7 +204,7 @@ def test_every_usage_query_passes_the_guard(snapshot):
 def test_cli_with_admin_client_id_and_permission_file(tmp_path, monkeypatch, capsys, output):
     from test_end_to_end import fake_workspace
 
-    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile: fake_workspace())
+    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile, **k: fake_workspace())
     perms = tmp_path / "perms.yaml"
     perms.write_text("entitlements: [databricks-sql-access]\n"
                      "grants:\n  - {object_type: clusters, object_name: shared, level: CAN_RESTART}\n"
@@ -213,7 +226,7 @@ def test_cli_with_admin_client_id_and_permission_file(tmp_path, monkeypatch, cap
 def test_cli_refuses_wrong_workspace_id(tmp_path, monkeypatch):
     from test_end_to_end import fake_workspace
 
-    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile: fake_workspace())
+    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile, **k: fake_workspace())
     with pytest.raises(SystemExit, match="--workspace-id"):
         cli.main(["analyze", "--admin-client-id", "sp-admin", "--workspace-id", "999", "--catalog", "c", "--schema", "s"])
 
@@ -229,7 +242,7 @@ def _fake(me="alice@contoso.com", warehouses=()):
 
 
 def test_cli_needs_admin_when_run_by_a_human(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile: _fake())
+    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile, **k: _fake())
     with pytest.raises(SystemExit, match="--admin"):
         cli.main(["analyze", "--catalog", "c", "--schema", "s"])
 
@@ -239,7 +252,7 @@ def test_cli_defaults_admin_to_running_sp_and_needs_no_other_input(tmp_path, mon
     w = _fake(me=sp)
     w.service_principals = SimpleNamespace(list=lambda **k: iter([
         __import__("databricks.sdk.service.iam", fromlist=["x"]).ServicePrincipal(id="s9", application_id=sp)]))
-    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile: w)
+    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile, **k: w)
     assert cli.main(["analyze", "--catalog", "c", "--schema", "s"]) == 0
     out = capsys.readouterr().out
     assert f"keeping {sp}" in out and "no permission set given" in out
@@ -313,7 +326,7 @@ def test_build_identities_uses_retained_admins(snapshot):
 
 
 def test_assume_moved_flag_removes_that_jobs_breaks(tmp_path, monkeypatch, output):
-    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile: _fake())
+    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile, **k: _fake())
     assert cli.main(["--admin", "sp-admin", "--assume-moved", "job:101", "--catalog", "c", "--schema", "s"]) == 0
     deltas = output["deltas"]
     assert not [d for d in deltas if d["artifact_id"] == "101"]

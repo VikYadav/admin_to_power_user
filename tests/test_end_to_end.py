@@ -89,7 +89,7 @@ def fake_workspace():
 
 
 def test_analyze_end_to_end(tmp_path, monkeypatch, capsys, output):
-    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile: fake_workspace())
+    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile, **k: fake_workspace())
     assert cli.main(["--admin", "sp-admin", "--catalog", "c", "--schema", "s"]) == 0
 
     load = lambda t: output[t]  # noqa: E731
@@ -110,3 +110,38 @@ def test_analyze_end_to_end(tmp_path, monkeypatch, capsys, output):
     assert output["_target"] == ("c", "s", "wh-auto") and output["_finished"] == "append"
     assert output["_dashboard"][0] == "/Users/alice@contoso.com"  # default: home of the running identity
     assert "NOT_READY" in capsys.readouterr().out
+
+
+def test_analyze_from_a_home_workspace_leaves_the_target_untouched(monkeypatch, capsys, output):
+    """--home-profile: the target gets a GET-only client; SQL, tables and dashboard all go to the home workspace."""
+    target = fake_workspace()
+    home = SimpleNamespace(config=SimpleNamespace(host="https://adb-2.2.azuredatabricks.net"), get_workspace_id=lambda: 2,
+                           current_user=SimpleNamespace(me=lambda: iam.User(user_name="sp-admin")))
+    sql_allowed, used_by = {}, {}
+
+    def client(cfg, host, profile, sql=True):
+        sql_allowed[profile] = sql
+        return home if profile == "w1" else target
+
+    class Runner:
+        def __init__(self, w, warehouse_id):
+            used_by["usage"] = w
+
+        def query(self, sql):
+            return []  # home sees no audit rows for the target -> region warning
+
+    monkeypatch.setattr(cli, "workspace_client", client)
+    monkeypatch.setattr(cli, "WarehouseRunner", Runner)
+    monkeypatch.setattr(cli, "resolve_warehouse", lambda w, wid: used_by.update(warehouse=w) or "wh-home")
+    monkeypatch.setattr(cli, "output_client", lambda w, scope: used_by.update(output=w) or ("output-client", scope))
+    assert cli.main(["--profile", "w2", "--home-profile", "w1", "--admin", "sp-admin",
+                     "--catalog", "c", "--schema", "s"]) == 0
+
+    assert sql_allowed == {"w2": False, "w1": True}
+    assert used_by == {"usage": home, "warehouse": home, "output": home}
+    assert output["_target"] == ("c", "s", "wh-home") and output["_dashboard"][0] == "/Users/sp-admin"
+    [run] = output["runs"]
+    assert run["workspace_id"] == "1" and run["workspace_host"] == target.config.host  # rows describe the target
+    assert "sees no audit events for workspace 1" in run["warnings"]
+    out = capsys.readouterr().out
+    assert "Nothing was created or run in https://adb-1.1.azuredatabricks.net" in out

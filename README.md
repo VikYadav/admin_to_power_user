@@ -14,6 +14,9 @@ schema you choose, and publishes an AI/BI dashboard over them.
 Any other request (permissions, groups, jobs, clusters, tokens, settings, other schemas) is refused before it is
 sent. Nothing is written to your machine. Running SQL starts the chosen warehouse if it is stopped.
 
+To leave the target completely untouched, run from a separate **results workspace** with `--home-profile`
+(see [Running from another workspace](#running-from-another-workspace)). The target then gets only GET calls.
+
 ## Quick start
 
 ```bash
@@ -34,12 +37,13 @@ admin-to-power-user --profile my-ws --catalog main --schema admin_to_power_user 
 | Input | How | Default |
 |---|---|---|
 | Workspace | `--profile` (or `--workspace-host`) | the default profile's workspace |
+| Results workspace (warehouse, tables, dashboard) | `--home-profile` (or `--home-host`) | the target workspace |
 | Where results go | `--catalog`, `--schema` (required; the schema is created if missing) | |
 | Append or overwrite | `--mode append` / `--mode overwrite` | append |
 | Who stays admin | `--admin <SP client id or group name>`, repeatable | the SP running the tool |
 | power_users permissions | `--permissions file.yaml` | none: the run writes a suggested set (`artifacts` table) |
-| SQL warehouse | `--warehouse-id` | a running warehouse, else a serverless one |
-| Dashboard location | `--dashboard-folder`, `--dashboard-name` | your home folder, "Admin to power_users readiness" |
+| SQL warehouse (in the results workspace) | `--warehouse-id` | a running warehouse, else a serverless one |
+| Dashboard location (in the results workspace) | `--dashboard-folder`, `--dashboard-name` | your home folder, "Admin to power_users readiness" |
 | Work already moved to an SP | `--assume-moved job:<id>` (also `pipeline:`, `token:`, `query:`), repeatable | none |
 | Usage window | `--lookback-days` | 90 |
 
@@ -111,6 +115,35 @@ the next run, so change the file instead (the output schema is written as `` `__
 It is published without embedded credentials, so viewers need CAN_VIEW on the dashboard and SELECT on the schema.
 Granting those is left to you: the tool never changes permissions.
 
+## Running from another workspace
+
+Run everything from one workspace (w1) against others (w2, w3) without creating anything in w2 or w3:
+
+```bash
+admin-to-power-user --profile w2 --home-profile w1 --catalog main --schema admin_to_power_user --admin <admin SP>
+admin-to-power-user --profile w3 --home-profile w1 --catalog main --schema admin_to_power_user --admin <admin SP>
+```
+
+| | Target (w2, w3) | Results workspace (w1) |
+|---|---|---|
+| REST reads (identities, jobs, ACLs, UC grants, tokens...) | GET only | |
+| System-table queries (filtered to the target's `workspace_id`) | | SELECT on w1's warehouse |
+| Output schema, tables, dashboard | | created / written here |
+
+- The target client refuses every SQL statement, not just writes, so a warehouse in the target is never used
+  (nor started). The target still records the GET calls in its own audit log.
+- Every row carries the target's `workspace_id`, so w2 and w3 can share one schema and one dashboard (use its
+  workspace filter). `--mode overwrite` replaces only that workspace's rows.
+- **Same account, and probably the same region:** `system.access.audit` holds workspace-level events only for
+  workspaces in the querying workspace's region. If w1 sees no audit events for the target, the run warns you,
+  because the usage evidence is then missing and severities are understated. Check with
+  `SELECT DISTINCT workspace_id FROM system.access.audit WHERE event_date >= current_date() - 7` on w1.
+- **Identity:** workspace admin on each target. On w1: `SELECT` on the system tables, write access to the
+  output schema, and `CAN_USE` on the warehouse. An account-level SP with OAuth M2M and a profile per
+  workspace works well. The two profiles may use different identities. The default retained admin is the
+  identity on the *target* profile, and the default dashboard folder is the home folder of the identity on the
+  *home* profile.
+
 ## Tests
 
 ```bash
@@ -133,9 +166,11 @@ Granting those is left to you: the tool never changes permissions.
 - **Name/path matching** relies on what the tool can list. Clusters, policies, pools, warehouses, jobs,
   pipelines and secret scopes are listed in full, so a name that matches nothing is reported as NOT_FOUND. Folder
   (`path`) grants are checked against the notebooks and files that something in scope actually uses.
-- **One workspace per run.** Run the tool once for each workspace.
+- **One target workspace per run.** Run the tool once for each workspace. Results from several targets can go to
+  one results workspace (`--home-profile`).
 - **Identity**: run it as an identity with workspace admin on the target (ideally the admin SP), with `SELECT` on
   `system.access.audit` and `system.lakeflow.*` for the usage data, `USE CATALOG` + `CREATE SCHEMA` (or
-  `USE SCHEMA` + `CREATE TABLE` + `MODIFY`) on the output, and `CAN_USE` on the warehouse.
+  `USE SCHEMA` + `CREATE TABLE` + `MODIFY`) on the output, and `CAN_USE` on the warehouse. With
+  `--home-profile`, everything except workspace admin is needed in the results workspace, not in the target.
 - **Not covered yet**: legacy Hive metastore table ACLs, serving endpoints, apps, MLflow experiments/models
   (add a collector that emits `Dependency` rows; the simulator and recommender are generic).

@@ -47,11 +47,17 @@ class WriteScope:
         return f"`{self.catalog}`.`{self.schema}`"
 
 
+# One left-to-right pass, so `--` or `/*` inside a string is not a comment and a quote inside a comment
+# does not start a string. Order matters: whichever token starts first wins.
+_TOKENS = re.compile(r"'(?:\\.|''|[^'\\])*'|`[^`]*`|--[^\n]*|/\*.*?\*/", re.S)
+
+
 def _strip_literals(sql: str) -> str:
-    sql = re.sub(r"--[^\n]*", " ", sql)
-    sql = re.sub(r"/\*.*?\*/", " ", sql, flags=re.S)
-    sql = re.sub(r"'(?:\\.|''|[^'\\])*'", "''", sql)  # string literals (audit action names like 'create')
-    return sql.strip()
+    """Blank string literals to '' (audit action names like 'create') and drop comments; keep `identifiers`."""
+    def token(m: re.Match) -> str:
+        t = m.group(0)
+        return "''" if t.startswith("'") else t if t.startswith("`") else " "
+    return _TOKENS.sub(token, sql).strip()
 
 
 def _strip(sql: str) -> str:

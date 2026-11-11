@@ -161,6 +161,24 @@ def test_guard_allows_reads_and_select_only():
     assert is_read_only_sql("SELECT * FROM t WHERE action_name = 'create' -- delete")
 
 
+def test_guard_reads_strings_and_comments_in_order():
+    # `--` and `/*` inside a string are text, not comments (the dashboard's fix summary says "--permissions")
+    assert is_read_only_sql("SELECT 'rerun with --permissions, then Set it' AS what_to_do FROM t")
+    assert is_read_only_sql("SELECT '/* not a comment', 'Delete me' FROM t")
+    assert is_read_only_sql("SELECT `odd--name`, 1 FROM t -- it's fine")
+    # ...and a quote or comment marker must not hide a second statement
+    for sql in ("SELECT 1 -- '\n; DROP TABLE t", "SELECT '/*', 1; DELETE FROM t --*/",
+                "SELECT 1 /* ' */; DROP TABLE t", "SELECT 'a''; DROP TABLE t; --'; DELETE FROM t"):
+        assert not is_read_only_sql(sql), sql
+
+
+def test_dashboard_queries_pass_the_guard():
+    from admin_to_power_user.dashboard import build
+
+    for ds in build("`main`.`adm`")["datasets"]:
+        assert is_read_only_sql("".join(ds["queryLines"])), ds["name"]
+
+
 def test_make_read_only_blocks_before_sending():
     sent = []
     api = SimpleNamespace(do=lambda *a, **k: sent.append(a) or {})

@@ -67,7 +67,7 @@ def recommend(d: Delta) -> Recommendation:
 
     if d.covered_by:
         rec.bucket = Bucket.COVERED.value
-        rec.primary_action = f"None: fixed by your power_users permission set ({d.covered_by})"
+        rec.primary_action = f"None: covered by your power_users permission set ({d.covered_by})"
         rec.alternative_action = (f"Still consider moving {d.artifact_type} '{d.artifact_name}' to a service principal"
                                   if d.artifact_type in ("job", "pipeline") else "")
         rec.rationale = f"Would fail for {who} with an empty power_users group; your permission set covers it"

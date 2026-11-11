@@ -1,4 +1,4 @@
-"""Roll recommendations up into the summary tables: the three fix buckets and readiness."""
+"""Roll recommendations up into the summary tables: the three fix buckets, the action plan and readiness."""
 
 from __future__ import annotations
 
@@ -10,8 +10,10 @@ import shlex
 from admin_to_power_user.model.levels import rank
 from admin_to_power_user.models import (
     SEVERITY_ORDER,
+    ActionItem,
     Bucket,
     Delta,
+    Kind,
     MoveToSpItem,
     ProcessChange,
     ProposedGrant,
@@ -51,24 +53,35 @@ def proposed_grants(deltas: dict[str, Delta], recs: list[Recommendation]) -> lis
     return sorted(out, key=lambda g: (g.scope_creep, SEVERITY_ORDER[Severity(g.max_severity)], -g.fixes_n_deltas))
 
 
+def _move_key(d: Delta) -> tuple[str, str]:
+    """What gets moved to an SP: the job/pipeline/PAT, the owned object, or the automation calling an admin API."""
+    if d.artifact_type:
+        return d.artifact_type, d.artifact_id
+    if d.kind == Kind.OWNERSHIP_RISK.value:
+        return d.object_type, d.object_id
+    return "automation", f"{d.object_id} by {key_name(d.principal)}"
+
+
+def _sp_needs(items: list[tuple[Delta, Recommendation]]) -> list[str]:
+    return sorted({f"{r.grant_level} on {r.grant_object_type} '{r.grant_object_name or r.grant_object_id}'"
+                   for _, r in items if r.grant_object_type and r.grant_object_type != "authorization"})
+
+
+def _move_action(items: list[tuple[Delta, Recommendation]]) -> str:
+    if len(items) == 1:
+        return items[0][1].primary_action
+    return f"Re-own / set run_as to an SP and grant the SP: {'; '.join(_sp_needs(items)) or 'nothing extra'}"
+
+
 def move_to_sp(deltas: dict[str, Delta], recs: list[Recommendation]) -> list[MoveToSpItem]:
     groups: dict[tuple[str, str], list[tuple[Delta, Recommendation]]] = defaultdict(list)
     for r in recs:
-        if r.bucket != Bucket.MOVE_TO_SP.value:
-            continue
-        d = deltas[r.delta_id]
-        if d.artifact_type:
-            k = (d.artifact_type, d.artifact_id)
-        elif d.kind == "OWNERSHIP_RISK":
-            k = (d.object_type, d.object_id)
-        else:  # admin-only action called by automation
-            k = ("automation", f"{d.object_id} by {key_name(d.principal)}")
-        groups[k].append((d, r))
+        if r.bucket == Bucket.MOVE_TO_SP.value:
+            groups[_move_key(deltas[r.delta_id])].append((deltas[r.delta_id], r))
     out = []
     for (atype, aid), items in groups.items():
         d0 = items[0][0]
-        needs = sorted({f"{r.grant_level} on {r.grant_object_type} '{r.grant_object_name or r.grant_object_id}'"
-                        for _, r in items if r.grant_object_type and r.grant_object_type != "authorization"})
+        needs = _sp_needs(items)
         out.append(MoveToSpItem(
             workspace_id=d0.workspace_id,
             artifact_type=atype,
@@ -77,8 +90,7 @@ def move_to_sp(deltas: dict[str, Delta], recs: list[Recommendation]) -> list[Mov
             current_identity=", ".join(sorted({key_name(d.principal) for d, _ in items})),
             max_severity=_worst(d.severity for d, _ in items),
             sp_needs="; ".join(needs),
-            action=items[0][1].primary_action if len(items) == 1 else
-            f"Re-own / set run_as to an SP and grant the SP: {'; '.join(needs) or 'nothing extra'}",
+            action=_move_action(items),
         ))
     return sorted(out, key=lambda m: SEVERITY_ORDER[Severity(m.max_severity)])
 
@@ -99,6 +111,83 @@ def process_changes(deltas: dict[str, Delta], recs: list[Recommendation]) -> lis
             last_seen=max((d.last_used for d, _ in items if d.last_used), default=None),
         ))
     return sorted(out, key=lambda p: -p.occurrences)
+
+
+def _grant_action(otype: str, oid: str, name: str, level: str) -> str:
+    if otype == "entitlement":
+        return f"Grant entitlement '{oid}' to power_users"
+    if otype == "uc-metastore":
+        return f"GRANT {oid.replace('_', ' ')} ON METASTORE TO `power_users`"
+    if otype == "authorization":
+        return "Grant power_users CAN_USE on token usage, or revoke the PATs nobody uses"
+    return f"Grant power_users {level} on {otype} '{name}'"
+
+
+def action_plan(deltas: dict[str, Delta], recs: list[Recommendation]) -> list[ActionItem]:
+    """The to-do list: one step per action, covering every open break (breaks, not covered by your set).
+
+    Breaks that one action fixes are merged: one grant per object (highest level needed), one move per
+    job/pipeline/PAT, one move per person whose scripts call admin-only APIs (all the APIs together), and one
+    process change per route (e.g. accounts:add and accounts:delete both go to SCIM). Ordered by worst severity,
+    then by how many breaks the step fixes; scope-creep grants (to a group of humans) go last within a severity.
+    """
+    groups: dict[tuple[str, str, str], list[tuple[Delta, Recommendation]]] = defaultdict(list)
+    for r in recs:
+        d = deltas[r.delta_id]
+        if not d.breaks or d.covered_by:
+            continue
+        if r.bucket == Bucket.POWER_USERS_GRANT.value and r.grant_object_type:
+            key = ("grant", r.grant_object_type, r.grant_object_id)
+        elif r.bucket == Bucket.MOVE_TO_SP.value and d.kind == Kind.ADMIN_ONLY_ACTION.value:
+            key = ("scripts", d.principal, "")  # one person's automation: switching it fixes every API it calls
+        elif r.bucket == Bucket.MOVE_TO_SP.value:
+            key = ("move", *_move_key(d))
+        elif r.bucket == Bucket.PROCESS_CHANGE.value:
+            key = ("process", d.kind, r.route or r.primary_action)
+        else:  # not expected; keeps every break in the plan
+            key = ("single", d.kind, d.delta_id)
+        groups[key].append((d, r))
+
+    plan = []
+    for (what, a, b), items in groups.items():
+        d0, r0 = items[0]
+        people = sorted({key_name(d.principal) for d, _ in items})
+        creep = what == "grant" and any(r.scope_creep for _, r in items)  # an SP getting the access is fine
+        alternative = r0.alternative_action if len(items) == 1 else ""
+        if what == "grant":
+            level = max((r.grant_level for _, r in items), key=lambda lv: rank(a, lv))
+            action = _grant_action(a, b, r0.grant_object_name or b, level)
+            who = "Metastore admin" if a == "uc-metastore" else "Admin SP (workspace admin)"
+            if creep and len(items) > 1:
+                alternative = "Scope creep: grant it to the people who need it individually, or move the work to an SP"
+        elif what == "move":
+            action = _move_action(items)
+            who = f"{', '.join(people)} (current identity), with the admin SP"
+        elif what == "scripts":
+            apis = ", ".join(sorted({d.object_id for d, _ in items}))
+            action = f"Switch the scripts {people[0]} runs as themselves to the admin SP (OAuth M2M). They call: {apis}"
+            who = f"{people[0]}, with the admin SP"
+            alternative = r0.route if len({r.route for _, r in items}) == 1 else \
+                "Or replace them with account-level SCIM / Terraform run by the admin SP"
+        elif a == Kind.NO_ADMIN_LEFT.value:
+            action, who = r0.primary_action, "Account admin, before cutover"
+        elif what == "process":
+            apis = ", ".join(sorted({d.object_id for d, _ in items}))
+            action, who = f"{r0.primary_action} (replaces {apis})", "Platform / identity team"
+        else:
+            action, who = r0.primary_action, "Admin SP"
+        item = ActionItem(
+            workspace_id=d0.workspace_id, step=0, bucket=r0.bucket, action=action, who_acts=who,
+            breaks_resolved=len(items),
+            blocker_high=sum(1 for d, _ in items if d.severity in (Severity.BLOCKER.value, Severity.HIGH.value)),
+            max_severity=_worst(d.severity for d, _ in items), people=", ".join(people), scope_creep=creep,
+            alternative=alternative, delta_ids=", ".join(d.delta_id for d, _ in items))
+        first = a == Kind.NO_ADMIN_LEFT.value  # nothing else can be done safely until an admin is kept
+        plan.append(((not first, SEVERITY_ORDER[Severity(item.max_severity)], creep, -len(items), action), item))
+    out = [item for _, item in sorted(plan, key=lambda p: p[0])]
+    for i, item in enumerate(out, 1):
+        item.step = i
+    return out
 
 
 def readiness(workspace_id: str, workspace_host: str, in_scope: dict[str, str], principals: dict,

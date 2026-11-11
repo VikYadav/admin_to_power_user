@@ -72,7 +72,7 @@ no admin.
    (with a terraform/SDK vs browser split), cluster creation without a policy, UC `create*` actions.
 3. **Simulate**: each admin's access *today* (implicit admin) vs *after* (groups minus `admins`, plus
    `power_users` with your permission set). The run happens twice: once with `power_users` as it is today
-   and once with your set added. Anything that fails only without your set is reported as **fixed by your
+   and once with your set added. Anything that fails only without your set is reported as **covered by your
    permission set** (`covered_by`). Each entry in the set is reported as USED, UNUSED (fixes nothing here) or
    NOT_FOUND (matches no object), and flagged when it is scope creep. Every remaining shortfall becomes a
    **delta** with a severity:
@@ -87,6 +87,10 @@ no admin.
    the move-to-SP list, process changes, and your permission set's coverage. The suggested permission set (your
    set plus the non-scope-creep additions) is saved in the `artifacts` table, ready to pass back with
    `--permissions`.
+6. **Action plan**: every open break (it breaks and your set doesn't cover it) is put into exactly one action:
+   one grant per object (at the highest level anyone needs), one move per job, pipeline, PAT or script, and one
+   process change per admin-only task. Actions are numbered worst-first, so doing them in order fixes every open
+   break without reading the breaks one by one.
 
 ## Outputs
 
@@ -96,6 +100,7 @@ no admin.
 |---|---|
 | `runs`, `readiness_summary` | One row per run: workspace, who stays admin, readiness counts, warnings |
 | `deltas`, `recommendations` | What breaks, and the fix for each item |
+| `action_plan` | The to-do list: one row per action, with who does it, how many breaks it fixes, and the `delta_ids` it fixes |
 | `proposed_power_user_grants`, `move_to_sp`, `process_changes` | The fixes rolled up by type |
 | `permission_set_coverage` | Each entry of your permission set: USED, UNUSED or NOT_FOUND |
 | `artifacts` | The suggested permission set (`suggested_permissions.yaml`), ready to pass back with `--permissions` |
@@ -105,9 +110,15 @@ no admin.
 - `--mode overwrite` replaces this workspace's earlier rows and keeps other workspaces' rows. Old rows are deleted
   only after the new run is fully written.
 
-**Dashboard**: one page, "What breaks and how to fix it". It has filters for workspace, status, what breaks, person
-and fix type; four counters (breaks with high impact, breaks with lower impact, fixed by your permission set,
-keeps working but review); two charts; the detail table; and the run's warnings.
+**Dashboard**: one page, "What breaks and how to fix it". From the top:
+- filters for workspace, status, what breaks, person and fix type;
+- four counters: breaks with high impact, breaks with lower impact, covered by your permission set, and keeps
+  working but review;
+- **Fix summary**: one row per fix type with what to do, who does it, how many actions and how many breaks it fixes;
+- **Action plan**: the numbered actions behind the summary. Doing all of them fixes every open break;
+- two charts, the detail table (one row per break) and the run's warnings.
+
+The workspace and fix type filters apply to every table. Status, what breaks and person filter only the detail table.
 
 The dashboard is locked to `src/admin_to_power_user/dashboard.lvdash.json`. Every run creates it, or updates it to
 exactly that definition, at `<folder>/<name>.lvdash.json`, and publishes it. Edits made in the UI are overwritten on

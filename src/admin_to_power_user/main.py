@@ -32,6 +32,7 @@ from admin_to_power_user.collectors.tokens import collect_tokens
 from admin_to_power_user.collectors.uc import collect_uc
 from admin_to_power_user.config import Config, RetainedAdmin, load_permission_file, parse_moved
 from admin_to_power_user.consolidator import (
+    action_plan,
     move_to_sp,
     process_changes,
     proposed_grants,
@@ -42,6 +43,7 @@ from admin_to_power_user.model.graph import PrincipalGraph
 from admin_to_power_user.models import (
     ADMINS_GROUP,
     AclRow,
+    ActionItem,
     Delta,
     MoveToSpItem,
     PermissionCoverage,
@@ -218,6 +220,7 @@ def analyze(args: argparse.Namespace) -> int:
     grants = proposed_grants(by_id, recs)
     moves = move_to_sp(by_id, recs)
     changes = process_changes(by_id, recs)
+    plan = action_plan(by_id, recs)
     summary = readiness(snapshot.workspace_id, snapshot.workspace_host, snapshot.in_scope, snapshot.principals,
                         deltas, grants, moves, changes)
     retained = ", ".join(k for k, why in snapshot.retained_admins.items() if not why.startswith("member of")) or \
@@ -244,6 +247,7 @@ def analyze(args: argparse.Namespace) -> int:
         ("proposed_power_user_grants", grants, ProposedGrant),
         ("move_to_sp", moves, MoveToSpItem),
         ("process_changes", changes, ProcessChange),
+        ("action_plan", plan, ActionItem),
         ("permission_set_coverage", cov, PermissionCoverage),
         ("readiness_summary", [summary], ReadinessSummary),
         ("artifacts", [TextArtifact("suggested_permissions.yaml",
@@ -261,11 +265,12 @@ def analyze(args: argparse.Namespace) -> int:
     print(f"would fail: {summary.blockers} BLOCKER, {summary.high} HIGH | medium {summary.medium}, "
           f"low {summary.low}, info {summary.info}")
     if cfg.permission_set.size:
-        print(f"your permission set ({cfg.permission_set.size} entries) fixes {summary.covered_by_permission_set} "
+        print(f"your permission set ({cfg.permission_set.size} entries) covers {summary.covered_by_permission_set} "
               f"break(s); unused entries: {summary.unused_permissions}, not found: {summary.not_found_permissions}, "
               f"scope creep: {sum(1 for c in cov if c.scope_creep)}")
     print(f"fixes: {summary.proposed_grants} more power_users grants ({summary.scope_creep_grants} scope creep), "
           f"{summary.move_to_sp_items} move-to-SP items, {summary.process_changes} process changes")
+    print(f"action plan: {len(plan)} step(s) fix all {sum(a.breaks_resolved for a in plan)} open break(s)")
     for warning in snapshot.warnings:
         print(f"warning: {warning}")
     print(f"results: {args.catalog}.{args.schema} (run {run_id}, {args.mode})")

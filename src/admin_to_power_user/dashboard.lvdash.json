@@ -6,7 +6,7 @@
    "queryLines": [
     "WITH latest AS (SELECT workspace_id, max_by(run_id, run_ts) AS run_id FROM `__CATALOG__`.`__SCHEMA__`.runs GROUP BY workspace_id)\n",
     "SELECT d.workspace_id,\n",
-    "  CASE WHEN d.covered_by IS NOT NULL THEN 'Fixed by your permission set'\n",
+    "  CASE WHEN d.covered_by IS NOT NULL THEN 'Covered by your permission set'\n",
     "       WHEN d.breaks AND d.severity IN ('BLOCKER', 'HIGH') THEN 'Breaks - high impact'\n",
     "       WHEN d.breaks THEN 'Breaks - lower impact' ELSE 'Keeps working - review' END AS status,\n",
     "  d.severity,\n",
@@ -26,11 +26,45 @@
     "  CASE WHEN d.covered_by IS NULL AND d.breaks THEN 1 ELSE 0 END AS n_breaks,\n",
     "  CASE WHEN d.covered_by IS NULL AND d.breaks AND d.severity IN ('BLOCKER', 'HIGH') THEN 1 ELSE 0 END AS n_high,\n",
     "  CASE WHEN d.covered_by IS NULL AND d.breaks AND NOT d.severity IN ('BLOCKER', 'HIGH') THEN 1 ELSE 0 END AS n_lower,\n",
-    "  CASE WHEN d.covered_by IS NOT NULL THEN 1 ELSE 0 END AS n_fixed,\n",
+    "  CASE WHEN d.covered_by IS NOT NULL THEN 1 ELSE 0 END AS n_covered,\n",
     "  CASE WHEN d.covered_by IS NULL AND NOT d.breaks THEN 1 ELSE 0 END AS n_review\n",
     "FROM `__CATALOG__`.`__SCHEMA__`.deltas d JOIN latest l ON d.workspace_id = l.workspace_id AND d.run_id = l.run_id\n",
     "JOIN `__CATALOG__`.`__SCHEMA__`.recommendations r ON r.delta_id = d.delta_id AND r.run_id = d.run_id AND r.workspace_id = d.workspace_id\n",
     "ORDER BY severity_order, d.usage_count DESC\n"
+   ]
+  },
+  {
+   "name": "fix_summary",
+   "displayName": "Fix summary",
+   "queryLines": [
+    "WITH latest AS (SELECT workspace_id, max_by(run_id, run_ts) AS run_id FROM `__CATALOG__`.`__SCHEMA__`.runs GROUP BY workspace_id)\n",
+    "SELECT a.workspace_id,\n",
+    "  CASE a.bucket WHEN 'POWER_USERS_GRANT' THEN 'Grant to power_users' WHEN 'MOVE_TO_SP' THEN 'Move to a service principal'\n    WHEN 'PROCESS_CHANGE' THEN 'Central team process' ELSE a.bucket END AS fix_type,\n",
+    "  CASE a.bucket\n",
+    "    WHEN 'POWER_USERS_GRANT' THEN 'Grant these to power_users. Quickest way: take suggested_permissions.yaml from the artifacts table (scope-creep grants are commented out), rerun with --permissions to confirm they show as covered, then apply them'\n",
+    "    WHEN 'MOVE_TO_SP' THEN 'Set run_as or ownership of each job, pipeline, PAT caller or script to a service principal, and grant that SP what it needs (listed in each action)'\n",
+    "    WHEN 'PROCESS_CHANGE' THEN 'Hand these admin-only tasks to the admin SP (Terraform PR), account group managers / SCIM, or PIM just-in-time elevation'\n",
+    "    ELSE '' END AS what_to_do,\n",
+    "  CASE a.bucket WHEN 'POWER_USERS_GRANT' THEN 'Admin SP / metastore admin' WHEN 'MOVE_TO_SP' THEN 'Owners of the jobs and scripts, with the admin SP'\n",
+    "    WHEN 'PROCESS_CHANGE' THEN 'Platform / identity team' ELSE '' END AS who,\n",
+    "  COUNT(*) AS actions, SUM(a.breaks_resolved) AS breaks_fixed, SUM(a.blocker_high) AS high_impact,\n",
+    "  SUM(CASE WHEN a.scope_creep THEN 1 ELSE 0 END) AS scope_creep_actions, MIN(a.step) AS first_step\n",
+    "FROM `__CATALOG__`.`__SCHEMA__`.action_plan a JOIN latest l ON a.workspace_id = l.workspace_id AND a.run_id = l.run_id\n",
+    "GROUP BY a.workspace_id, a.bucket\n",
+    "ORDER BY first_step\n"
+   ]
+  },
+  {
+   "name": "actions",
+   "displayName": "Action plan",
+   "queryLines": [
+    "WITH latest AS (SELECT workspace_id, max_by(run_id, run_ts) AS run_id FROM `__CATALOG__`.`__SCHEMA__`.runs GROUP BY workspace_id)\n",
+    "SELECT a.workspace_id, a.step, a.max_severity AS severity,\n",
+    "  CASE a.bucket WHEN 'POWER_USERS_GRANT' THEN 'Grant to power_users' WHEN 'MOVE_TO_SP' THEN 'Move to a service principal'\n    WHEN 'PROCESS_CHANGE' THEN 'Central team process' ELSE a.bucket END AS fix_type,\n",
+    "  a.action, a.who_acts, a.breaks_resolved, a.blocker_high, a.people,\n",
+    "  CASE WHEN a.scope_creep THEN 'Yes' ELSE '' END AS scope_creep, a.alternative\n",
+    "FROM `__CATALOG__`.`__SCHEMA__`.action_plan a JOIN latest l ON a.workspace_id = l.workspace_id AND a.run_id = l.run_id\n",
+    "ORDER BY a.step\n"
    ]
   },
   {
@@ -57,7 +91,7 @@
       "multilineTextboxSpec": {
        "lines": [
         "## What breaks when admins move to power_users, and how to fix it\n",
-        "Each row is one thing a current admin would lose. Start with **Breaks - high impact**, then use the filters."
+        "Start with the **Fix summary** and the **Action plan**: doing every action fixes every open break. The table at the bottom lists each break on its own (Status, What breaks and Person filter only that table)."
        ]
       }
      },
@@ -105,6 +139,40 @@
          ],
          "disaggregated": false
         }
+       },
+       {
+        "name": "filter_45c9650e_fix_summary",
+        "query": {
+         "datasetName": "fix_summary",
+         "fields": [
+          {
+           "name": "workspace_id",
+           "expression": "`workspace_id`"
+          },
+          {
+           "name": "workspace_id_associativity",
+           "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+          }
+         ],
+         "disaggregated": false
+        }
+       },
+       {
+        "name": "filter_45c9650e_actions",
+        "query": {
+         "datasetName": "actions",
+         "fields": [
+          {
+           "name": "workspace_id",
+           "expression": "`workspace_id`"
+          },
+          {
+           "name": "workspace_id_associativity",
+           "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+          }
+         ],
+         "disaggregated": false
+        }
        }
       ],
       "spec": {
@@ -121,6 +189,16 @@
           "fieldName": "workspace_id",
           "displayName": "Workspace",
           "queryName": "filter_45c9650e_run"
+         },
+         {
+          "fieldName": "workspace_id",
+          "displayName": "Workspace",
+          "queryName": "filter_45c9650e_fix_summary"
+         },
+         {
+          "fieldName": "workspace_id",
+          "displayName": "Workspace",
+          "queryName": "filter_45c9650e_actions"
          }
         ]
        },
@@ -298,6 +376,40 @@
          ],
          "disaggregated": false
         }
+       },
+       {
+        "name": "filter_18923aab_fix_summary",
+        "query": {
+         "datasetName": "fix_summary",
+         "fields": [
+          {
+           "name": "fix_type",
+           "expression": "`fix_type`"
+          },
+          {
+           "name": "fix_type_associativity",
+           "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+          }
+         ],
+         "disaggregated": false
+        }
+       },
+       {
+        "name": "filter_18923aab_actions",
+        "query": {
+         "datasetName": "actions",
+         "fields": [
+          {
+           "name": "fix_type",
+           "expression": "`fix_type`"
+          },
+          {
+           "name": "fix_type_associativity",
+           "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+          }
+         ],
+         "disaggregated": false
+        }
        }
       ],
       "spec": {
@@ -309,6 +421,16 @@
           "fieldName": "fix_type",
           "displayName": "Fix type",
           "queryName": "filter_18923aab_items"
+         },
+         {
+          "fieldName": "fix_type",
+          "displayName": "Fix type",
+          "queryName": "filter_18923aab_fix_summary"
+         },
+         {
+          "fieldName": "fix_type",
+          "displayName": "Fix type",
+          "queryName": "filter_18923aab_actions"
          }
         ]
        },
@@ -415,8 +537,8 @@
          "datasetName": "items",
          "fields": [
           {
-           "name": "sum(n_fixed)",
-           "expression": "SUM(`n_fixed`)"
+           "name": "sum(n_covered)",
+           "expression": "SUM(`n_covered`)"
           }
          ],
          "disaggregated": false
@@ -428,13 +550,13 @@
        "widgetType": "counter",
        "encodings": {
         "value": {
-         "fieldName": "sum(n_fixed)",
-         "displayName": "Fixed by your permission set"
+         "fieldName": "sum(n_covered)",
+         "displayName": "Covered by your permission set"
         }
        },
        "frame": {
         "showTitle": true,
-        "title": "Fixed by your permission set"
+        "title": "Covered by your permission set"
        }
       }
      },
@@ -483,6 +605,216 @@
       "y": 3,
       "width": 3,
       "height": 2
+     }
+    },
+    {
+     "widget": {
+      "name": "5a1c9e07",
+      "queries": [
+       {
+        "name": "main_query",
+        "query": {
+         "datasetName": "fix_summary",
+         "fields": [
+          {
+           "name": "fix_type",
+           "expression": "`fix_type`"
+          },
+          {
+           "name": "what_to_do",
+           "expression": "`what_to_do`"
+          },
+          {
+           "name": "who",
+           "expression": "`who`"
+          },
+          {
+           "name": "actions",
+           "expression": "`actions`"
+          },
+          {
+           "name": "breaks_fixed",
+           "expression": "`breaks_fixed`"
+          },
+          {
+           "name": "high_impact",
+           "expression": "`high_impact`"
+          },
+          {
+           "name": "scope_creep_actions",
+           "expression": "`scope_creep_actions`"
+          }
+         ],
+         "disaggregated": true
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "table",
+       "encodings": {
+        "columns": [
+         {
+          "fieldName": "fix_type",
+          "displayName": "Fix type"
+         },
+         {
+          "fieldName": "what_to_do",
+          "displayName": "What to do"
+         },
+         {
+          "fieldName": "who",
+          "displayName": "Who"
+         },
+         {
+          "fieldName": "actions",
+          "displayName": "Actions"
+         },
+         {
+          "fieldName": "breaks_fixed",
+          "displayName": "Breaks it fixes"
+         },
+         {
+          "fieldName": "high_impact",
+          "displayName": "High impact"
+         },
+         {
+          "fieldName": "scope_creep_actions",
+          "displayName": "Scope creep"
+         }
+        ]
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "Fix summary: what to do, by type of fix"
+       },
+       "data": {
+        "queryName": "main_query"
+       }
+      }
+     },
+     "position": {
+      "x": 0,
+      "y": 5,
+      "width": 12,
+      "height": 4
+     }
+    },
+    {
+     "widget": {
+      "name": "7d3b2f64",
+      "queries": [
+       {
+        "name": "main_query",
+        "query": {
+         "datasetName": "actions",
+         "fields": [
+          {
+           "name": "step",
+           "expression": "`step`"
+          },
+          {
+           "name": "severity",
+           "expression": "`severity`"
+          },
+          {
+           "name": "fix_type",
+           "expression": "`fix_type`"
+          },
+          {
+           "name": "action",
+           "expression": "`action`"
+          },
+          {
+           "name": "who_acts",
+           "expression": "`who_acts`"
+          },
+          {
+           "name": "breaks_resolved",
+           "expression": "`breaks_resolved`"
+          },
+          {
+           "name": "blocker_high",
+           "expression": "`blocker_high`"
+          },
+          {
+           "name": "people",
+           "expression": "`people`"
+          },
+          {
+           "name": "scope_creep",
+           "expression": "`scope_creep`"
+          },
+          {
+           "name": "alternative",
+           "expression": "`alternative`"
+          }
+         ],
+         "disaggregated": true
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "table",
+       "encodings": {
+        "columns": [
+         {
+          "fieldName": "step",
+          "displayName": "#"
+         },
+         {
+          "fieldName": "severity",
+          "displayName": "Severity"
+         },
+         {
+          "fieldName": "fix_type",
+          "displayName": "Fix type"
+         },
+         {
+          "fieldName": "action",
+          "displayName": "Action"
+         },
+         {
+          "fieldName": "who_acts",
+          "displayName": "Who"
+         },
+         {
+          "fieldName": "breaks_resolved",
+          "displayName": "Breaks it fixes"
+         },
+         {
+          "fieldName": "blocker_high",
+          "displayName": "High impact"
+         },
+         {
+          "fieldName": "people",
+          "displayName": "For"
+         },
+         {
+          "fieldName": "scope_creep",
+          "displayName": "Scope creep"
+         },
+         {
+          "fieldName": "alternative",
+          "displayName": "Alternative"
+         }
+        ]
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "Action plan: do these in order to fix every open break"
+       },
+       "data": {
+        "queryName": "main_query"
+       }
+      }
+     },
+     "position": {
+      "x": 0,
+      "y": 9,
+      "width": 12,
+      "height": 9
      }
     },
     {
@@ -566,7 +898,7 @@
      },
      "position": {
       "x": 0,
-      "y": 5,
+      "y": 18,
       "width": 6,
       "height": 5
      }
@@ -652,7 +984,7 @@
      },
      "position": {
       "x": 6,
-      "y": 5,
+      "y": 18,
       "width": 6,
       "height": 5
      }
@@ -785,7 +1117,7 @@
      },
      "position": {
       "x": 0,
-      "y": 10,
+      "y": 23,
       "width": 12,
       "height": 12
      }
@@ -878,7 +1210,7 @@
      },
      "position": {
       "x": 0,
-      "y": 22,
+      "y": 35,
       "width": 12,
       "height": 3
      }

@@ -107,9 +107,13 @@ def test_analyze_end_to_end(tmp_path, monkeypatch, capsys, output):
     assert summary["status"] == "NOT_READY" and summary["admins_in_scope"] == 1
     assert {p["principal"] for p in load("principals") if p["in_scope"]} == {"user:alice@contoso.com"}
     assert output["artifacts"][0]["name"] == "suggested_permissions.yaml"
+    plan = output["action_plan"]
+    assert sum(a["breaks_resolved"] for a in plan) == sum(1 for d in deltas if d["breaks"] and not d["covered_by"])
+    assert plan[0]["step"] == 1 and plan[0]["workspace_id"] == "1"
     assert output["_target"] == ("c", "s", "wh-auto") and output["_finished"] == "append"
     assert output["_dashboard"][0] == "/Users/alice@contoso.com"  # default: home of the running identity
-    assert "NOT_READY" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "NOT_READY" in out and f"action plan: {len(plan)} step(s)" in out
 
 
 def test_analyze_from_a_home_workspace_leaves_the_target_untouched(monkeypatch, capsys, output):

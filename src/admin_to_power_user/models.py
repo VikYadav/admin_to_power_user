@@ -58,7 +58,7 @@ SEVERITY_ORDER = {s: i for i, s in enumerate(Severity)}
 
 
 class Bucket(str, Enum):
-    COVERED = "COVERED"  # already fixed by the power_users permission set you supplied
+    COVERED = "COVERED"  # already covered by the power_users permission set you supplied
     POWER_USERS_GRANT = "POWER_USERS_GRANT"
     MOVE_TO_SP = "MOVE_TO_SP"
     PROCESS_CHANGE = "PROCESS_CHANGE"
@@ -193,6 +193,24 @@ class ProcessChange:
     admins: str
     occurrences: int
     last_seen: Optional[str]
+
+
+@dataclass
+class ActionItem:
+    """One step of the action plan. Doing every step fixes every open break; each break is in exactly one step."""
+
+    workspace_id: str
+    step: int  # 1 = do first
+    bucket: str  # POWER_USERS_GRANT | MOVE_TO_SP | PROCESS_CHANGE
+    action: str
+    who_acts: str
+    breaks_resolved: int
+    blocker_high: int
+    max_severity: str
+    people: str  # admins whose breaks this step fixes
+    scope_creep: bool
+    alternative: str
+    delta_ids: str  # ", "-joined; links back to the deltas table
 
 
 @dataclass

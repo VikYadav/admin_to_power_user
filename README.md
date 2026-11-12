@@ -114,9 +114,10 @@ no admin.
 - filters for workspace, status, what breaks, person and fix type;
 - four counters: breaks with high impact, breaks with lower impact, covered by your permission set, and keeps
   working but review;
+- two charts and the detail table (one row per break);
 - **Fix summary**: one row per fix type with what to do, who does it, how many actions and how many breaks it fixes;
 - **Action plan**: the numbered actions behind the summary. Doing all of them fixes every open break;
-- two charts, the detail table (one row per break) and the run's warnings.
+- the run's details and warnings (About this run).
 
 The workspace and fix type filters apply to every table. Status, what breaks and person filter only the detail table.
 

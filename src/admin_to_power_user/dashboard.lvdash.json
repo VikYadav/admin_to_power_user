@@ -91,7 +91,7 @@
       "multilineTextboxSpec": {
        "lines": [
         "## What breaks when admins move to power_users, and how to fix it\n",
-        "Start with the **Fix summary** and the **Action plan**: doing every action fixes every open break. The table at the bottom lists each break on its own (Status, What breaks and Person filter only that table)."
+        "Each row of the detail table is one thing a current admin would lose. For the fixes, go to the **Fix summary** and **Action plan** below it: doing every action fixes every open break (Status, What breaks and Person filter only the detail table)."
        ]
       }
      },
@@ -609,216 +609,6 @@
     },
     {
      "widget": {
-      "name": "5a1c9e07",
-      "queries": [
-       {
-        "name": "main_query",
-        "query": {
-         "datasetName": "fix_summary",
-         "fields": [
-          {
-           "name": "fix_type",
-           "expression": "`fix_type`"
-          },
-          {
-           "name": "what_to_do",
-           "expression": "`what_to_do`"
-          },
-          {
-           "name": "who",
-           "expression": "`who`"
-          },
-          {
-           "name": "actions",
-           "expression": "`actions`"
-          },
-          {
-           "name": "breaks_fixed",
-           "expression": "`breaks_fixed`"
-          },
-          {
-           "name": "high_impact",
-           "expression": "`high_impact`"
-          },
-          {
-           "name": "scope_creep_actions",
-           "expression": "`scope_creep_actions`"
-          }
-         ],
-         "disaggregated": true
-        }
-       }
-      ],
-      "spec": {
-       "version": 2,
-       "widgetType": "table",
-       "encodings": {
-        "columns": [
-         {
-          "fieldName": "fix_type",
-          "displayName": "Fix type"
-         },
-         {
-          "fieldName": "what_to_do",
-          "displayName": "What to do"
-         },
-         {
-          "fieldName": "who",
-          "displayName": "Who"
-         },
-         {
-          "fieldName": "actions",
-          "displayName": "Actions"
-         },
-         {
-          "fieldName": "breaks_fixed",
-          "displayName": "Breaks it fixes"
-         },
-         {
-          "fieldName": "high_impact",
-          "displayName": "High impact"
-         },
-         {
-          "fieldName": "scope_creep_actions",
-          "displayName": "Scope creep"
-         }
-        ]
-       },
-       "frame": {
-        "showTitle": true,
-        "title": "Fix summary: what to do, by type of fix"
-       },
-       "data": {
-        "queryName": "main_query"
-       }
-      }
-     },
-     "position": {
-      "x": 0,
-      "y": 5,
-      "width": 12,
-      "height": 4
-     }
-    },
-    {
-     "widget": {
-      "name": "7d3b2f64",
-      "queries": [
-       {
-        "name": "main_query",
-        "query": {
-         "datasetName": "actions",
-         "fields": [
-          {
-           "name": "step",
-           "expression": "`step`"
-          },
-          {
-           "name": "severity",
-           "expression": "`severity`"
-          },
-          {
-           "name": "fix_type",
-           "expression": "`fix_type`"
-          },
-          {
-           "name": "action",
-           "expression": "`action`"
-          },
-          {
-           "name": "who_acts",
-           "expression": "`who_acts`"
-          },
-          {
-           "name": "breaks_resolved",
-           "expression": "`breaks_resolved`"
-          },
-          {
-           "name": "blocker_high",
-           "expression": "`blocker_high`"
-          },
-          {
-           "name": "people",
-           "expression": "`people`"
-          },
-          {
-           "name": "scope_creep",
-           "expression": "`scope_creep`"
-          },
-          {
-           "name": "alternative",
-           "expression": "`alternative`"
-          }
-         ],
-         "disaggregated": true
-        }
-       }
-      ],
-      "spec": {
-       "version": 2,
-       "widgetType": "table",
-       "encodings": {
-        "columns": [
-         {
-          "fieldName": "step",
-          "displayName": "#"
-         },
-         {
-          "fieldName": "severity",
-          "displayName": "Severity"
-         },
-         {
-          "fieldName": "fix_type",
-          "displayName": "Fix type"
-         },
-         {
-          "fieldName": "action",
-          "displayName": "Action"
-         },
-         {
-          "fieldName": "who_acts",
-          "displayName": "Who"
-         },
-         {
-          "fieldName": "breaks_resolved",
-          "displayName": "Breaks it fixes"
-         },
-         {
-          "fieldName": "blocker_high",
-          "displayName": "High impact"
-         },
-         {
-          "fieldName": "people",
-          "displayName": "For"
-         },
-         {
-          "fieldName": "scope_creep",
-          "displayName": "Scope creep"
-         },
-         {
-          "fieldName": "alternative",
-          "displayName": "Alternative"
-         }
-        ]
-       },
-       "frame": {
-        "showTitle": true,
-        "title": "Action plan: do these in order to fix every open break"
-       },
-       "data": {
-        "queryName": "main_query"
-       }
-      }
-     },
-     "position": {
-      "x": 0,
-      "y": 9,
-      "width": 12,
-      "height": 9
-     }
-    },
-    {
-     "widget": {
       "name": "2133554b",
       "queries": [
        {
@@ -898,7 +688,7 @@
      },
      "position": {
       "x": 0,
-      "y": 18,
+      "y": 5,
       "width": 6,
       "height": 5
      }
@@ -984,7 +774,7 @@
      },
      "position": {
       "x": 6,
-      "y": 18,
+      "y": 5,
       "width": 6,
       "height": 5
      }
@@ -1117,9 +907,219 @@
      },
      "position": {
       "x": 0,
-      "y": 23,
+      "y": 10,
       "width": 12,
       "height": 12
+     }
+    },
+    {
+     "widget": {
+      "name": "5a1c9e07",
+      "queries": [
+       {
+        "name": "main_query",
+        "query": {
+         "datasetName": "fix_summary",
+         "fields": [
+          {
+           "name": "fix_type",
+           "expression": "`fix_type`"
+          },
+          {
+           "name": "what_to_do",
+           "expression": "`what_to_do`"
+          },
+          {
+           "name": "who",
+           "expression": "`who`"
+          },
+          {
+           "name": "actions",
+           "expression": "`actions`"
+          },
+          {
+           "name": "breaks_fixed",
+           "expression": "`breaks_fixed`"
+          },
+          {
+           "name": "high_impact",
+           "expression": "`high_impact`"
+          },
+          {
+           "name": "scope_creep_actions",
+           "expression": "`scope_creep_actions`"
+          }
+         ],
+         "disaggregated": true
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "table",
+       "encodings": {
+        "columns": [
+         {
+          "fieldName": "fix_type",
+          "displayName": "Fix type"
+         },
+         {
+          "fieldName": "what_to_do",
+          "displayName": "What to do"
+         },
+         {
+          "fieldName": "who",
+          "displayName": "Who"
+         },
+         {
+          "fieldName": "actions",
+          "displayName": "Actions"
+         },
+         {
+          "fieldName": "breaks_fixed",
+          "displayName": "Breaks it fixes"
+         },
+         {
+          "fieldName": "high_impact",
+          "displayName": "High impact"
+         },
+         {
+          "fieldName": "scope_creep_actions",
+          "displayName": "Scope creep"
+         }
+        ]
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "Fix summary: what to do, by type of fix"
+       },
+       "data": {
+        "queryName": "main_query"
+       }
+      }
+     },
+     "position": {
+      "x": 0,
+      "y": 22,
+      "width": 12,
+      "height": 4
+     }
+    },
+    {
+     "widget": {
+      "name": "7d3b2f64",
+      "queries": [
+       {
+        "name": "main_query",
+        "query": {
+         "datasetName": "actions",
+         "fields": [
+          {
+           "name": "step",
+           "expression": "`step`"
+          },
+          {
+           "name": "severity",
+           "expression": "`severity`"
+          },
+          {
+           "name": "fix_type",
+           "expression": "`fix_type`"
+          },
+          {
+           "name": "action",
+           "expression": "`action`"
+          },
+          {
+           "name": "who_acts",
+           "expression": "`who_acts`"
+          },
+          {
+           "name": "breaks_resolved",
+           "expression": "`breaks_resolved`"
+          },
+          {
+           "name": "blocker_high",
+           "expression": "`blocker_high`"
+          },
+          {
+           "name": "people",
+           "expression": "`people`"
+          },
+          {
+           "name": "scope_creep",
+           "expression": "`scope_creep`"
+          },
+          {
+           "name": "alternative",
+           "expression": "`alternative`"
+          }
+         ],
+         "disaggregated": true
+        }
+       }
+      ],
+      "spec": {
+       "version": 2,
+       "widgetType": "table",
+       "encodings": {
+        "columns": [
+         {
+          "fieldName": "step",
+          "displayName": "#"
+         },
+         {
+          "fieldName": "severity",
+          "displayName": "Severity"
+         },
+         {
+          "fieldName": "fix_type",
+          "displayName": "Fix type"
+         },
+         {
+          "fieldName": "action",
+          "displayName": "Action"
+         },
+         {
+          "fieldName": "who_acts",
+          "displayName": "Who"
+         },
+         {
+          "fieldName": "breaks_resolved",
+          "displayName": "Breaks it fixes"
+         },
+         {
+          "fieldName": "blocker_high",
+          "displayName": "High impact"
+         },
+         {
+          "fieldName": "people",
+          "displayName": "For"
+         },
+         {
+          "fieldName": "scope_creep",
+          "displayName": "Scope creep"
+         },
+         {
+          "fieldName": "alternative",
+          "displayName": "Alternative"
+         }
+        ]
+       },
+       "frame": {
+        "showTitle": true,
+        "title": "Action plan: do these in order to fix every open break"
+       },
+       "data": {
+        "queryName": "main_query"
+       }
+      }
+     },
+     "position": {
+      "x": 0,
+      "y": 26,
+      "width": 12,
+      "height": 9
      }
     },
     {

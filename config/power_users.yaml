@@ -1,6 +1,6 @@
 # power_users = what workspace admins can do today, minus the centrally owned features
-# (workspace settings, IP access lists, personnel access, AI features, previews: see
-# docs/power_users_permission_model.md). Everything that can be granted to a group is granted here.
+# (workspace settings, IP access lists, personnel access, AI features, previews). Everything that can be
+# granted to a group is granted here.
 # Run with: admin-to-power-user ... --permissions config/power_users.yaml
 #
 # "*" means every object of that type. When the central team applies this for real, leave out the objects

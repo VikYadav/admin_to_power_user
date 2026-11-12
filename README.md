@@ -1,9 +1,13 @@
 # admin_to_power_user
 
+> **Not an official Databricks product.** This is a community tool, provided as is under the
+> [Apache License 2.0](LICENSE), without warranty or support. It runs with workspace-admin credentials: read the
+> code and [Security notes](#security-notes) before you use it, and try it on a non-production workspace first.
+
 Goal: no human is workspace admin. The admin service principal (and/or an admin group) stays admin; every
 other member of `admins` moves to an account-level `power_users` group that gets **the permission set you
 choose**. For one target workspace, this tool predicts what would fail after the move, shows what your
-permission set already fixes, recommends a fix for everything else, saves the results to a Unity Catalog
+permission set already covers, recommends a fix for everything else, saves the results to a Unity Catalog
 schema you choose, and publishes an AI/BI dashboard over them.
 
 **It changes nothing except its own output.** Two API clients are used (`readonly.py`):
@@ -156,6 +160,24 @@ admin-to-power-user --profile w3 --home-profile w1 --catalog main --schema admin
   identity on the *target* profile, and the default dashboard folder is the home folder of the identity on the
   *home* profile.
 
+## Security notes
+
+- **Credentials.** The tool never stores or handles credentials itself: authentication is the Databricks SDK's
+  (`--profile`, environment variables, OAuth). Prefer an OAuth service principal over a personal access token.
+- **No secret or token values are read.** The tool only needs secret *scope names* (from `{{secrets/...}}`
+  references and `dbutils.secrets.get` calls). Notebook source is read into memory to find them and is not
+  stored. The token API returns token metadata, never token values.
+- **The output is sensitive.** `<catalog>.<schema>` holds admins' emails, PAT IDs and comments, ACLs, user agents and
+  the objects they use. Limit `SELECT` on the schema, and `CAN_VIEW` on the dashboard, to the people running the
+  migration. The dashboard is published without embedded credentials, so viewers only see what they can query.
+- **What the read-only guard is, and isn't.** `readonly.py` checks every request the SDK sends and refuses
+  anything outside the allowed reads and the output schema/dashboard. That protects you from mistakes in the
+  tool. It isn't a sandbox: it only holds for unmodified code, so review changes before you run them.
+- **SQL.** Values written to the result tables are escaped as SQL literals and every write is re-checked against
+  the allowed statement forms. `--catalog` and `--schema` must not contain backticks.
+- **Reporting a problem.** Please open an issue without workspace URLs, IDs or names, or contact the maintainer
+  directly for anything sensitive.
+
 ## Tests
 
 ```bash
@@ -186,3 +208,7 @@ admin-to-power-user --profile w3 --home-profile w1 --catalog main --schema admin
   `--home-profile`, everything except workspace admin is needed in the results workspace, not in the target.
 - **Not covered yet**: legacy Hive metastore table ACLs, serving endpoints, apps, MLflow experiments/models
   (add a collector that emits `Dependency` rows; the simulator and recommender are generic).
+
+## License
+
+[Apache License 2.0](LICENSE). Not an official Databricks product; no warranty or support.

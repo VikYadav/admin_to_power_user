@@ -3,6 +3,7 @@ name = "admin-to-power-user"
 version = "0.1.0"
 description = "Read-only: predict what breaks when workspace admins move to a power_users group, and recommend fixes"
 requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
 dependencies = [
     "databricks-sdk>=0.40.0",
     "pyyaml>=6.0",

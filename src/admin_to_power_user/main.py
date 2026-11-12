@@ -182,6 +182,9 @@ def resolve_warehouse(w, warehouse_id: str | None) -> str:
 
 
 def analyze(args: argparse.Namespace) -> int:
+    for flag, value in (("--catalog", args.catalog), ("--schema", args.schema)):
+        if "`" in value:  # names are quoted with backticks in every statement
+            raise SystemExit(f"{flag} must not contain a backtick: {value!r}")
     cfg = apply_overrides(Config(), args)
     split = bool(args.home_profile or args.home_host)
     w = workspace_client(cfg, cfg.workspace_host, args.profile, sql=not split)  # split: GET/HEAD only

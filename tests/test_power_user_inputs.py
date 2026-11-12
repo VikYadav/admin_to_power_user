@@ -241,6 +241,15 @@ def test_cli_with_admin_client_id_and_permission_file(tmp_path, monkeypatch, cap
     assert "Nothing else in the workspace was changed." in out and "dashboard: https://" in out
 
 
+def test_cli_refuses_backticks_in_output_names(monkeypatch):
+    called = []
+    monkeypatch.setattr(cli, "workspace_client", lambda *a, **k: called.append(a))
+    for args in (["--catalog", "main`; DROP", "--schema", "s"], ["--catalog", "c", "--schema", "a`.`b"]):
+        with pytest.raises(SystemExit, match="backtick"):
+            cli.main(["--admin", "sp-admin", *args])
+    assert not called  # refused before connecting to anything
+
+
 def test_cli_refuses_wrong_workspace_id(tmp_path, monkeypatch):
     from test_end_to_end import fake_workspace
 

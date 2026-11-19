@@ -71,9 +71,6 @@ class Config:
     def power_users_key(self) -> str:
         return f"group:{self.power_users_group}"
 
-    def all_retained(self) -> list[RetainedAdmin]:
-        return list(self.retained_admins)
-
 
 MOVED_TYPES = {"job", "pipeline", "token", "query"}
 

@@ -1,8 +1,6 @@
 """Run the full `analyze` command against a fake WorkspaceClient built from real SDK dataclasses."""
 
 import base64
-import json
-import os
 from types import SimpleNamespace
 
 from databricks.sdk.errors import NotFound
@@ -89,7 +87,7 @@ def fake_workspace():
 
 
 def test_analyze_end_to_end(tmp_path, monkeypatch, capsys, output):
-    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile, **k: fake_workspace())
+    monkeypatch.setattr(cli, "workspace_client", lambda host, profile, **k: fake_workspace())
     assert cli.main(["--admin", "sp-admin", "--catalog", "c", "--schema", "s"]) == 0
 
     load = lambda t: output[t]  # noqa: E731
@@ -123,7 +121,7 @@ def test_analyze_from_a_home_workspace_leaves_the_target_untouched(monkeypatch, 
                            current_user=SimpleNamespace(me=lambda: iam.User(user_name="sp-admin")))
     sql_allowed, used_by = {}, {}
 
-    def client(cfg, host, profile, sql=True):
+    def client(host, profile, sql=True):
         sql_allowed[profile] = sql
         return home if profile == "w1" else target
 

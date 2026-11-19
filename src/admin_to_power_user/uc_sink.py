@@ -4,6 +4,7 @@ Every row carries `run_id`, `run_ts` and `workspace_id`.
 mode=append     keeps every run; the dashboard shows the latest run per workspace.
 mode=overwrite  replaces this workspace's earlier rows; other workspaces' rows in the same tables are kept.
 Old rows are deleted only after every table has been written, so a failed run never loses earlier results.
+Several runs may write the same tables at once (a multi-workspace job): Delta write conflicts are retried.
 """
 
 from __future__ import annotations
@@ -15,9 +16,14 @@ from typing import Any
 
 from databricks.sdk.errors import NotFound, ResourceDoesNotExist
 
+from admin_to_power_user.statements import lit, run_statement
+
 META_COLUMNS = {"run_id": "STRING", "run_ts": "TIMESTAMP", "workspace_id": "STRING"}
 SQL_TYPES = {str: "STRING", int: "BIGINT", bool: "BOOLEAN", float: "DOUBLE"}
 MAX_STATEMENT_BYTES = 1_000_000
+RETRIES = 3  # attempts after the first, for Delta concurrent-modification conflicts
+CONFLICT_MARKERS = ("ConcurrentAppendException", "ConcurrentDeleteReadException", "ConcurrentDeleteDeleteException",
+                    "ConcurrentTransactionException", "MetadataChangedException", "DELTA_CONCURRENT")
 
 
 def sql_literal(value: Any, sql_type: str) -> str:
@@ -27,8 +33,7 @@ def sql_literal(value: Any, sql_type: str) -> str:
         return "TRUE" if value else "FALSE"
     if sql_type in ("BIGINT", "DOUBLE"):
         return str(int(value) if sql_type == "BIGINT" else float(value))
-    text = "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
-    return f"TIMESTAMP {text}" if sql_type == "TIMESTAMP" else text
+    return f"TIMESTAMP {lit(value)}" if sql_type == "TIMESTAMP" else lit(value)
 
 
 def columns_of(row_type: type) -> dict[str, str]:
@@ -57,16 +62,16 @@ class UcSink:
     # ---- SQL ----------------------------------------------------------------------------------
 
     def execute(self, sql: str) -> None:
-        from databricks.sdk.service.sql import StatementState
+        for attempt in range(RETRIES + 1):
+            try:
+                return self._execute_once(sql)
+            except RuntimeError as e:
+                if attempt == RETRIES or not any(m in str(e) for m in CONFLICT_MARKERS):
+                    raise
+                time.sleep(2 * 2 ** attempt)
 
-        se = self.w.statement_execution
-        resp = se.execute_statement(statement=sql, warehouse_id=self.warehouse_id, wait_timeout="50s")
-        while resp.status and resp.status.state in (StatementState.PENDING, StatementState.RUNNING):
-            time.sleep(2)
-            resp = se.get_statement(resp.statement_id)
-        if not resp.status or resp.status.state != StatementState.SUCCEEDED:
-            err = resp.status.error if resp.status else None
-            raise RuntimeError(f"Statement failed: {getattr(err, 'message', err)}\n{sql[:300]}")
+    def _execute_once(self, sql: str) -> None:
+        run_statement(self.w, self.warehouse_id, sql)
 
     def _ensure_schema(self) -> None:
         try:
@@ -100,11 +105,12 @@ class UcSink:
         for item in items:
             row = {**self.meta, **(dataclasses.asdict(item) if dataclasses.is_dataclass(item) else dict(item))}
             values = "(" + ", ".join(sql_literal(row.get(c), t) for c, t in cols.items()) + ")"
-            if batch and size + len(values) > MAX_STATEMENT_BYTES:
+            n = len(values.encode("utf-8"))
+            if batch and size + n > MAX_STATEMENT_BYTES:
                 self.execute(head + ", ".join(batch))
                 batch, size = [], len(head)
             batch.append(values)
-            size += len(values) + 2
+            size += n + 2
         if batch:
             self.execute(head + ", ".join(batch))
 

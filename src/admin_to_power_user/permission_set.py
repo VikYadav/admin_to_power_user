@@ -13,7 +13,6 @@ Simplest form: a YAML list, one permission per line (see config/power_users.yaml
 Structured form (also accepted in the --permissions file):
 
     power_users:
-      group: power_users
       permissions:
         entitlements: [workspace-access, databricks-sql-access]
         grants:
@@ -36,13 +35,12 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from admin_to_power_user.model.levels import LEVELS, satisfies
-from admin_to_power_user.model.resolver import WhatIf
+from admin_to_power_user.model.resolver import PATH_TYPES, WhatIf, under
 from admin_to_power_user.models import Delta, Kind, PermissionCoverage, Severity, key_name
 from admin_to_power_user.recommender import SCOPE_CREEP_ENTITLEMENTS, SCOPE_CREEP_LEVELS, SCOPE_CREEP_UC
 
 # Object types whose full inventory the collectors list, so a name/id that matches nothing is NOT_FOUND.
 INVENTORIED = {"clusters", "cluster-policies", "instance-pools", "warehouses", "jobs", "pipelines", "secret-scopes"}
-PATH_TYPES = {"notebooks", "files", "directories", "repos"}
 MAX_NAMES = 5
 
 
@@ -175,10 +173,6 @@ class BoundGrant:
     matched: int = -1  # -1 = cannot be verified for this object type
 
 
-def _under(path: str, prefix: str) -> bool:
-    return prefix == "/" or path == prefix or path.startswith(prefix + "/")
-
-
 def bind(ps: PermissionSet, object_names: dict[tuple[str, str], str]) -> list[BoundGrant]:
     """Resolve each grant to the concrete objects it covers in this workspace."""
     by_type: dict[str, dict[str, str]] = {}
@@ -188,7 +182,7 @@ def bind(ps: PermissionSet, object_names: dict[tuple[str, str], str]) -> list[Bo
     for g in ps.grants:
         b = BoundGrant(g)
         if g.path is not None:
-            hits = {(t, i): n for t in PATH_TYPES for i, n in by_type.get(t, {}).items() if _under(n, g.path)}
+            hits = {(t, i): n for t in PATH_TYPES for i, n in by_type.get(t, {}).items() if under(n, g.path)}
             b.ids = {i for _, i in hits}
             b.names = sorted(set(hits.values()))[:MAX_NAMES]
             b.matched = len(hits) if hits else -1  # folders are not inventoried; only report what we saw
@@ -228,7 +222,7 @@ def _grant_fixes(b: BoundGrant, d: Delta, object_names: dict[tuple[str, str], st
         return False
     if b.spec.path is not None:
         path = object_names.get((d.object_type, d.object_id), d.object_name or "")
-        return d.object_type in PATH_TYPES and _under(path, b.spec.path) and \
+        return d.object_type in PATH_TYPES and under(path, b.spec.path) and \
             satisfies(d.object_type, b.spec.level, d.required_level)
     return d.object_type == b.spec.object_type and ("*" in b.ids or d.object_id in b.ids) and \
         satisfies(d.object_type, b.spec.level, d.required_level)

@@ -5,14 +5,13 @@ from __future__ import annotations
 from databricks.sdk import WorkspaceClient
 
 from admin_to_power_user.collectors.identities import NameResolver
-from admin_to_power_user.config import Config
 from admin_to_power_user.model.levels import RUN_AS_REQUIRED
 from admin_to_power_user.models import Artifact, Dependency, Kind, Snapshot
 
 MAX_DASHBOARDS = 500
 
 
-def collect_sql_objects(w: WorkspaceClient, snapshot: Snapshot, cfg: Config, names: NameResolver) -> None:
+def collect_sql_objects(w: WorkspaceClient, snapshot: Snapshot, names: NameResolver) -> None:
     try:
         for q in w.queries.list():
             owner = names.key(q.owner_user_name) if q.owner_user_name else None

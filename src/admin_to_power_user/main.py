@@ -9,6 +9,10 @@ the tool's own dashboard (see readonly.py).
 
 With --home-profile (or --home-host) the results go to another workspace: the target only gets GET calls, and
 the system-table queries, output tables and dashboard all use the home workspace and its warehouse.
+
+As a Databricks job (see databricks.yml): --home-current makes the job's own workspace the home, and
+--target-client-id / --target-secret-scope / --target-secret-key reach the target as a service principal with
+its OAuth secret. --no-dashboard and --dashboard-only let a multi-workspace job publish the dashboard once.
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 
-from admin_to_power_user.clients import output_client, workspace_client
+from admin_to_power_user.clients import output_client, read_secret, target_client, workspace_client
 from admin_to_power_user.collectors.acls import collect_acls
 from admin_to_power_user.collectors.compute import collect_compute_names
 from admin_to_power_user.collectors.identities import NameResolver, collect_identities
@@ -93,8 +97,8 @@ def collect(w, cfg: Config, warehouse_id: str, home=None) -> Snapshot:
     print(f"[collect] {len(snapshot.in_scope)} admins in scope: {', '.join(sorted(snapshot.in_scope)) or '-'}")
     collect_compute_names(w, snapshot)
     targets = collect_jobs(w, snapshot, cfg, names)
-    _optional(snapshot, "pipelines", collect_pipelines, w, snapshot, cfg, names)
-    collect_sql_objects(w, snapshot, cfg, names)
+    _optional(snapshot, "pipelines", collect_pipelines, w, snapshot, names)
+    collect_sql_objects(w, snapshot, names)
     _optional(snapshot, "notebook scan", scan_notebooks, w, snapshot, cfg, targets)
     usage = Usage(WarehouseRunner(home or w, warehouse_id), snapshot, names, cfg.lookback_days)
     if home is not None and home is not w:
@@ -136,10 +140,6 @@ UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
     for ref in args.admin or []:
         cfg.retained_admins.append(RetainedAdmin("auto", ref))
-    for client_id in args.admin_client_id or []:
-        cfg.retained_admins.append(RetainedAdmin("service_principal", client_id))
-    for group in args.admin_group or []:
-        cfg.retained_admins.append(RetainedAdmin("group", group))
     if args.permissions:
         cfg.permission_set = load_permission_file(args.permissions)
     if args.power_users_group:
@@ -181,16 +181,41 @@ def resolve_warehouse(w, warehouse_id: str | None) -> str:
     return picked[0]
 
 
+def publish_dashboard(cfg: Config, args: argparse.Namespace, split: bool) -> int:
+    """--dashboard-only: create or update the dashboard over existing results, without analysing anything."""
+    home = workspace_client(args.home_host, args.home_profile) if split else \
+        workspace_client(cfg.workspace_host, args.profile)
+    warehouse_id = resolve_warehouse(home, args.warehouse_id)
+    folder = args.dashboard_folder or f"/Users/{home.current_user.me().user_name or ''}"
+    scope = WriteScope(args.catalog, args.schema, folder)
+    _, url = deploy(output_client(home, scope), scope, warehouse_id, args.dashboard_name)
+    print(f"dashboard over {args.catalog}.{args.schema}: {url}")
+    return 0
+
+
 def analyze(args: argparse.Namespace) -> int:
     for flag, value in (("--catalog", args.catalog), ("--schema", args.schema)):
         if "`" in value:  # names are quoted with backticks in every statement
             raise SystemExit(f"{flag} must not contain a backtick: {value!r}")
     cfg = apply_overrides(Config(), args)
-    split = bool(args.home_profile or args.home_host)
-    w = workspace_client(cfg, cfg.workspace_host, args.profile, sql=not split)  # split: GET/HEAD only
-    home = workspace_client(cfg, args.home_host, args.home_profile) if split else w
+    split = bool(args.home_profile or args.home_host or args.home_current)
+    if args.dashboard_only:
+        return publish_dashboard(cfg, args, split)
+    sp_auth = (args.target_client_id, args.target_secret_scope, args.target_secret_key)
+    if any(sp_auth) and not all(sp_auth):
+        raise SystemExit("--target-client-id, --target-secret-scope and --target-secret-key go together.")
+    if all(sp_auth) and not (split and cfg.workspace_host):
+        raise SystemExit("--target-client-id needs --workspace-host and a results workspace "
+                         "(--home-current, --home-profile or --home-host).")
+    home = workspace_client(args.home_host, args.home_profile) if split else None
+    if all(sp_auth):  # the secret is read from the results workspace and only kept in memory
+        w = target_client(cfg.workspace_host, args.target_client_id,
+                          read_secret(home, args.target_secret_scope, args.target_secret_key))
+    else:
+        w = workspace_client(cfg.workspace_host, args.profile, sql=not split)  # split: GET/HEAD only
+    home = home or w
     me = w.current_user.me().user_name or ""
-    if not cfg.all_retained():
+    if not cfg.retained_admins:
         if not UUID.match(me):
             raise SystemExit(f"You are running as {me}. Say who stays admin: --admin <SP client id or group name>.")
         cfg.retained_admins.append(RetainedAdmin("service_principal", me))
@@ -227,7 +252,7 @@ def analyze(args: argparse.Namespace) -> int:
     summary = readiness(snapshot.workspace_id, snapshot.workspace_host, snapshot.in_scope, snapshot.principals,
                         deltas, grants, moves, changes)
     retained = ", ".join(k for k, why in snapshot.retained_admins.items() if not why.startswith("member of")) or \
-        ", ".join(r.label for r in cfg.all_retained())
+        ", ".join(r.label for r in cfg.retained_admins)
     summary.permission_set_size = cfg.permission_set.size
     summary.unused_permissions = sum(1 for c in cov if c.status == "UNUSED")
     summary.not_found_permissions = sum(1 for c in cov if c.status == "NOT_FOUND")
@@ -260,7 +285,7 @@ def analyze(args: argparse.Namespace) -> int:
     for name, items, row_type in tables:
         sink.write(name, items, row_type)
     sink.finish()
-    dashboard_id, url = deploy(ww, scope, warehouse_id, args.dashboard_name)
+    url = "skipped (--no-dashboard)" if args.no_dashboard else deploy(ww, scope, warehouse_id, args.dashboard_name)[1]
 
     print(f"\n=== {snapshot.workspace_host} (workspace {snapshot.workspace_id}) : {summary.status} ===")
     print(f"retained admins: {retained}")
@@ -311,14 +336,20 @@ def main(argv: list[str] | None = None) -> int:
                    help="~/.databrickscfg profile of the results workspace: runs the SQL and gets the tables and "
                         "dashboard, so nothing is created in the target (default: the target)")
     p.add_argument("--home-host", default=None, help="results workspace host (overrides --home-profile's host)")
+    p.add_argument("--home-current", action="store_true",
+                   help="results workspace = the SDK's default auth (in a job: the job's own workspace)")
+    p.add_argument("--target-client-id", default=None,
+                   help="reach the target as this SP (OAuth M2M); use with --target-secret-scope/-key")
+    p.add_argument("--target-secret-scope", default=None,
+                   help="secret scope in the results workspace holding the SP's OAuth secret")
+    p.add_argument("--target-secret-key", default=None, help="key of the SP's OAuth secret in that scope")
     p.add_argument("--dashboard-folder", default=None,
                    help="folder for the dashboard in the results workspace (default: your home folder there)")
     p.add_argument("--dashboard-name", default=DEFAULT_NAME)
-    p.add_argument("--admin-client-id", action="append", help=argparse.SUPPRESS)
-    p.add_argument("--admin-group", action="append", help=argparse.SUPPRESS)
-    argv = list(sys.argv[1:] if argv is None else argv)
-    if argv[:1] == ["analyze"]:  # the old subcommand name still works
-        argv = argv[1:]
+    p.add_argument("--no-dashboard", action="store_true",
+                   help="write the results but don't deploy the dashboard (a later --dashboard-only run does it)")
+    p.add_argument("--dashboard-only", action="store_true",
+                   help="only create/update and publish the dashboard over existing results; no analysis")
     return analyze(p.parse_args(argv))
 
 

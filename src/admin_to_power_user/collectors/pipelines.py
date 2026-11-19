@@ -7,7 +7,6 @@ from databricks.sdk.service import pipelines
 
 from admin_to_power_user.collectors.identities import NameResolver
 from admin_to_power_user.collectors.jobs import PATH_PREFIX, cluster_spec_dependencies, secret_scopes_in
-from admin_to_power_user.config import Config
 from admin_to_power_user.model.levels import RUN_AS_REQUIRED
 from admin_to_power_user.models import Artifact, Dependency, EntitlementNeed, Kind, Snapshot
 
@@ -33,7 +32,8 @@ def pipeline_dependencies(pipeline_id: str, spec: pipelines.PipelineSpec, princi
     return deps, needs
 
 
-def collect_pipelines(w: WorkspaceClient, snapshot: Snapshot, cfg: Config, names: NameResolver) -> None:
+def collect_pipelines(w: WorkspaceClient, snapshot: Snapshot, names: NameResolver) -> None:
+    failed: list[str] = []
     for p in w.pipelines.list_pipelines():
         snapshot.object_names[("pipelines", p.pipeline_id)] = p.name or p.pipeline_id
         run_as = names.key(p.run_as_user_name) if p.run_as_user_name else None
@@ -45,8 +45,16 @@ def collect_pipelines(w: WorkspaceClient, snapshot: Snapshot, cfg: Config, names
                                                  "created by an in-scope admin", artifact))
         if run_as not in snapshot.in_scope:
             continue
-        spec = w.pipelines.get(p.pipeline_id).spec
+        try:
+            spec = w.pipelines.get(p.pipeline_id).spec
+        except Exception as e:  # one unreadable pipeline must not drop the others
+            failed.append(f"{p.pipeline_id} ({type(e).__name__})")
+            continue
         if spec:
             deps, needs = pipeline_dependencies(p.pipeline_id, spec, run_as)
             snapshot.dependencies += deps
             snapshot.entitlement_needs += needs
+    if failed:
+        snapshot.warnings.append(f"Could not read the settings of {len(failed)} pipeline(s) running as an admin; "
+                                 f"their dependencies are missing: {', '.join(failed[:10])}"
+                                 f"{' ...' if len(failed) > 10 else ''}")

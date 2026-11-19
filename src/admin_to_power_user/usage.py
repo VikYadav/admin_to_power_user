@@ -7,12 +7,12 @@ own logs (`SELECT DISTINCT service_name, action_name FROM system.access.audit`).
 
 from __future__ import annotations
 
-import time
 from typing import Iterable, Optional, Protocol
 
 from admin_to_power_user.collectors.identities import NameResolver
 from admin_to_power_user.models import Dependency, EntitlementNeed, Kind, Snapshot, key_name
 from admin_to_power_user.readonly import check_sql
+from admin_to_power_user.statements import lit, run_statement
 
 AUTOMATION_UA = ("terraform|databricks-sdk|databricks-cli|cli/|python-requests|curl|azure-data-factory|"
                  "okhttp|apache-httpclient|go-http-client|postman|powershell|airflow|dbt")
@@ -57,24 +57,12 @@ class WarehouseRunner:
         self.warehouse_id = warehouse_id
 
     def query(self, sql: str) -> list[dict]:
-        from databricks.sdk.service.sql import StatementState
-
-        se = self.w.statement_execution
-        resp = se.execute_statement(statement=check_sql(sql), warehouse_id=self.warehouse_id, wait_timeout="50s")
-        while resp.status and resp.status.state in (StatementState.PENDING, StatementState.RUNNING):
-            time.sleep(2)
-            resp = se.get_statement(resp.statement_id)
-        if resp.status.state != StatementState.SUCCEEDED:
-            raise RuntimeError(f"Statement failed: {resp.status.error}")
+        resp = run_statement(self.w, self.warehouse_id, check_sql(sql))
         cols = [c.name for c in resp.manifest.schema.columns]
         rows = list((resp.result and resp.result.data_array) or [])
         for n in range(1, resp.manifest.total_chunk_count or 1):
-            rows += se.get_statement_result_chunk_n(resp.statement_id, n).data_array or []
+            rows += self.w.statement_execution.get_statement_result_chunk_n(resp.statement_id, n).data_array or []
         return [dict(zip(cols, r)) for r in rows]
-
-
-def lit(s: str) -> str:
-    return "'" + str(s).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def in_list(values: Iterable[str]) -> str:

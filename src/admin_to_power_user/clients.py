@@ -1,7 +1,7 @@
 """WorkspaceClients for the target workspace and the results workspace.
 
 Auth: `--profile` (a ~/.databrickscfg profile), otherwise the SDK's default auth (env vars / DEFAULT profile).
-`--workspace-host` overrides the profile's host. `--home-profile` / `--home-host` pick the results workspace
+`--workspace <URL>` overrides the profile's host. `--home-profile` / `--home-host` pick the results workspace
 (the warehouse, output tables and dashboard); without them it is the target itself. `--home-current` uses the
 default auth for the results workspace (inside a job: the job's own workspace and run-as identity).
 

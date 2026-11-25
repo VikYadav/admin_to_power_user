@@ -95,7 +95,9 @@ def collect(w, cfg: Config, warehouse_id: str, home=None) -> Snapshot:
     snapshot = Snapshot(str(w.get_workspace_id()), w.config.host)
     collect_identities(w, snapshot, cfg)
     names = NameResolver(snapshot)
-    print(f"[collect] {len(snapshot.in_scope)} admins in scope: {', '.join(sorted(snapshot.in_scope)) or '-'}")
+    in_scope = sorted(snapshot.in_scope)
+    print(f"[collect] {len(in_scope)} admins in scope: {', '.join(in_scope[:10]) or '-'}"
+          f"{' ...' if len(in_scope) > 10 else ''} (all of them are in the principals table)")
     collect_compute_names(w, snapshot)
     targets = collect_jobs(w, snapshot, cfg, names)
     _optional(snapshot, "pipelines", collect_pipelines, w, snapshot, names)
@@ -155,8 +157,6 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
     if args.permissions:
         cfg.permission_set = load_permission_file(args.permissions)
     if args.workspace:
-        if args.workspace_host or args.workspace_id:
-            raise SystemExit("Pass the target once: --workspace, or --workspace-host / --workspace-id.")
         ref = args.workspace.strip()
         if ref.isdigit():
             cfg.workspace_id = ref
@@ -164,10 +164,6 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
             cfg.workspace_host = ref
     if args.power_users_group:
         cfg.power_users_group = args.power_users_group
-    if args.workspace_id:
-        cfg.workspace_id = str(args.workspace_id)
-    if args.workspace_host:
-        cfg.workspace_host = args.workspace_host
     if args.lookback_days:
         cfg.lookback_days = args.lookback_days
     if args.assume_moved:
@@ -263,7 +259,7 @@ def analyze(args: argparse.Namespace) -> int:
               "shows the set that would fix what can be granted")
     ws_id = str(w.get_workspace_id())
     if cfg.workspace_id and cfg.workspace_id != ws_id:
-        raise SystemExit(f"Connected to workspace {ws_id} ({w.config.host}) but --workspace-id is "
+        raise SystemExit(f"Connected to workspace {ws_id} ({w.config.host}) but --workspace is "
                          f"{cfg.workspace_id}. Check --workspace / --profile.")
     home_id = str(home.get_workspace_id()) if split else ws_id
     if split:
@@ -372,8 +368,6 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--workspace", default=None, metavar="URL_OR_ID",
                    help="target workspace URL or ID; with a results workspace an ID is enough (its URL is looked "
                         "up in system.access.workspaces_latest), otherwise it is checked against --profile")
-    p.add_argument("--workspace-host", default=None, help="default: the profile's workspace")
-    p.add_argument("--workspace-id", default=None, help="expected workspace id (safety check)")
     p.add_argument("--home-profile", default=None,
                    help="~/.databrickscfg profile of the results workspace: runs the SQL and gets the tables and "
                         "dashboard, so nothing is created in the target (default: the target)")

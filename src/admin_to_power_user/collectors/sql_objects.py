@@ -1,4 +1,8 @@
-"""SQL queries/alerts and AI/BI dashboards that execute with an in-scope admin's credentials."""
+"""SQL queries, alerts and AI/BI dashboards of in-scope admins.
+
+Queries that run as their owner and dashboards published with embedded credentials depend on the owner's access
+(their warehouse); every one of them, and every owned alert, is also an ownership risk.
+"""
 
 from __future__ import annotations
 

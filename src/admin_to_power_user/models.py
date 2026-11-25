@@ -85,7 +85,7 @@ class AclEntry:
 class Artifact:
     """The thing that creates a dependency (a job, pipeline, query...), used for MOVE_TO_SP."""
 
-    type: str  # job | pipeline | query | token | automation
+    type: str  # job | pipeline | query | alert | dashboard | token | uc-catalog | uc-external-location | ...
     id: str
     name: str
 

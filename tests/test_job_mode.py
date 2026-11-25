@@ -17,7 +17,7 @@ from test_end_to_end import fake_workspace
 
 SECRET = "fake-oauth-secret-for-tests"
 SP = "0f0e0d0c-1111-2222-3333-444455556666"
-JOB_ARGS = ["--workspace-host", "https://adb-1.1.azuredatabricks.net", "--home-current",
+JOB_ARGS = ["--workspace", "https://adb-1.1.azuredatabricks.net", "--home-current",
             "--target-client-id", SP, "--target-secret-scope", "atpu", "--target-secret-key", "sp-secret",
             "--admin", "sp-admin", "--catalog", "c", "--schema", "s"]
 
@@ -153,12 +153,11 @@ def test_job_passes_each_list_entry_to_workspace():
 
 
 @pytest.mark.parametrize("args, message", [
-    (["--workspace-host", "https://x", "--home-current", "--target-client-id", SP], "go together"),
-    (["--workspace-host", "https://x", "--target-client-id", SP, "--target-secret-scope", "a",
+    (["--workspace", "https://x", "--home-current", "--target-client-id", SP], "go together"),
+    (["--workspace", "https://x", "--target-client-id", SP, "--target-secret-scope", "a",
       "--target-secret-key", "b"], "results workspace"),
     (["--home-current", "--target-client-id", SP, "--target-secret-scope", "a", "--target-secret-key", "b"],
      "needs the target"),
-    (["--workspace", "1", "--workspace-id", "1"], "Pass the target once"),
 ])
 def test_job_flags_are_checked_before_connecting(monkeypatch, args, message):
     monkeypatch.setattr(cli, "workspace_client", lambda *a, **k: pytest.fail("connected before checking flags"))

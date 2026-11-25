@@ -32,7 +32,7 @@ output (schema, tables, dashboard) is refused. It never makes the move itself.
 ## Requirements
 
 - Python 3.10+ and [uv](https://docs.astral.sh/uv/); the Databricks CLI
-- `system.access.audit` and `system.lakeflow.*` enabled
+- `system.access.audit`, `system.access.workspaces_latest` and `system.lakeflow.*` enabled
 - An identity with **workspace admin** on the target (ideally the admin SP), plus `SELECT` on those system tables,
   `USE CATALOG` + `CREATE SCHEMA` on the output catalog, and `CAN_USE` on a SQL warehouse
 
@@ -191,9 +191,15 @@ through a mirror, set `UV_DEFAULT_INDEX=<mirror URL>` before deploying.
 ### 7. Open and share the dashboard
 
 The dashboard, **Admin to power_users readiness**, is in `/Users/<SP id>/admin_to_power_user` in the results
-workspace. Each viewer needs `CAN_VIEW` on it (a workspace admin can share it, since the folder belongs to the SP),
-`USE CATALOG`/`USE SCHEMA` and `SELECT` on `<catalog>.admin_to_power_user`, and `CAN_USE` on the warehouse. Keep this
-list short: the results include admins' emails, PAT IDs and ACLs.
+workspace. Each viewer, **including you**, needs `CAN_VIEW` on it (a workspace admin can share it, since the folder belongs
+to the SP), `USE CATALOG`/`USE SCHEMA` and `SELECT` on `<catalog>.<schema>`, and `CAN_USE` on the warehouse. The SP
+creates the schema and owns it, so even the catalog owner has to grant themselves `SELECT`:
+
+```sql
+GRANT USE SCHEMA, SELECT ON SCHEMA <catalog>.admin_to_power_user TO `<you or a viewers group>`;
+```
+
+Keep this list short: the results include admins' emails, PAT IDs and ACLs.
 
 ### Changing it later
 
@@ -207,7 +213,7 @@ same values as `BUNDLE_VAR_<name>` pipeline variables, for example `BUNDLE_VAR_c
 ## Output
 
 Tables in `<catalog>.<schema>`: the main ones are `readiness_summary`, `deltas` (what breaks), `recommendations`,
-`action_plan` and `permission_set_coverage`. There is one dashboard, "What breaks and how to fix it". The output
+`action_plan` and `permission_set_coverage`. There is one dashboard, "Admin to power_users readiness". The output
 contains admins' emails and ACLs, so limit who can read it. See [docs/reference.md](docs/reference.md#outputs).
 
 ## Documentation

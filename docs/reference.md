@@ -16,18 +16,17 @@ dashboard, multi-workspace runs, the job mode, and assumptions to check in your 
 
 | Input | How | Default |
 |---|---|---|
-| Workspace | `--profile`, or `--workspace <URL or ID>` (an ID alone needs a results workspace, to look up its URL) | the default profile's workspace |
+| Workspace | `--profile`, and/or `--workspace <URL or ID>`. A URL overrides the profile's host. An ID is checked against the workspace the profile points at, or, with a results workspace, is enough on its own (its URL is looked up) | the default profile's workspace |
 | Results workspace (warehouse, tables, dashboard) | `--home-profile` (or `--home-host`) | the target workspace |
 | Where results go | `--catalog`, `--schema` (required; the schema is created if missing) | |
 | Append or overwrite | `--mode append` / `--mode overwrite` | append |
-| Who stays admin | `--admin <SP client id or group name>`, repeatable | the SP running the tool |
+| Who stays admin | `--admin <SP client id or group name>`, repeatable | required, unless you run as an SP: that SP is kept |
 | power_users permissions | `--permissions file.yaml` | none: the run writes a suggested set (`artifacts` table) |
 | SQL warehouse (in the results workspace) | `--warehouse-id` | a running warehouse, else a serverless one |
 | Dashboard location (in the results workspace) | `--dashboard-folder`, `--dashboard-name` | your home folder, "Admin to power_users readiness" |
 | Work already moved to an SP | `--assume-moved job:<id>` (also `pipeline:`, `token:`, `query:`), repeatable | none |
 | Usage window | `--lookback-days` | 90 |
 | Name of the group admins move to | `--power-users-group` | `power_users` |
-| Safety check on the target | `--workspace-id <id>`: stop if the target's workspace id differs | none |
 | Results workspace = the current auth (in a job: the job's workspace) | `--home-current` | |
 | Reach the target as an SP with an OAuth secret from the results workspace | `--target-client-id`, `--target-secret-scope`, `--target-secret-key` | |
 | Dashboard only | `--no-dashboard` (write results only) / `--dashboard-only` (publish over existing results) | both off |
@@ -54,12 +53,15 @@ no admin.
 ## What the tool may call
 
 **It changes nothing except its own output.** Two API clients are used (`readonly.py`):
-- The **analysis client** only reads: GET calls, plus single SELECT statements on the system tables.
-- The **output client** may only create the schema and tables in `<catalog>.<schema>`, insert rows, delete
-  this workspace's older rows (overwrite mode), and create/update/publish the tool's own dashboard in one folder.
+- The **analysis client** only reads: GET calls, plus single read-only `SELECT`/`WITH` statements (the tool only
+  queries system tables).
+- The **output client** may only create the schema and tables in `<catalog>.<schema>`, add columns to them, insert
+  rows, delete this workspace's older rows (overwrite mode), create the dashboard folder, and create/update/publish
+  the tool's own dashboard in it.
 
 Any other request (permissions, groups, jobs, clusters, tokens, settings, other schemas) is refused before it is
-sent. Nothing is written to your machine. Running SQL starts the chosen warehouse if it is stopped.
+sent. Nothing is written to your machine. Running SQL starts the chosen warehouse if it is stopped, and a statement
+still running after 30 minutes fails the run.
 
 To leave the target completely untouched, run from a separate **results workspace** with `--home-profile`
 (see [Running from another workspace](#running-from-another-workspace)). The target then gets only GET calls.
@@ -69,7 +71,8 @@ To leave the target completely untouched, run from a separate **results workspac
 1. **Collect** (as the admin SP): users, SPs, nested groups, entitlements; jobs/pipelines/queries/dashboards
    that run as an admin and everything they depend on (clusters, policies, pools, notebooks, files,
    warehouses, secret scopes, including `{{secrets/...}}` refs and `dbutils.secrets.get` in notebook code);
-   admins' PATs; UC metastore grants and admin-owned UC objects; ACLs for only those objects.
+   admins' PATs; UC metastore grants and admin-owned UC objects; ACLs for only those objects. Inactive accounts
+   still in `admins` are analysed like the others and flagged (`inactive account` in `principals`, and a warning).
 2. **Usage** from system tables: job runs, `secrets:getSecret` and other object touches, admin-only actions
    (with a terraform/SDK vs browser split), cluster creation without a policy, UC `create*` actions.
 3. **Simulate**: each admin's access *today* (implicit admin) vs *after* (groups minus `admins`, plus
@@ -79,9 +82,10 @@ To leave the target completely untouched, run from a separate **results workspac
    NOT_FOUND (matches no object), and flagged when it is scope creep. Every remaining shortfall becomes a
    **delta** with a severity:
    - `BLOCKER`: a job/pipeline that ran in the lookback window, a PAT that's in use and would be blocked, or an admin-only action run by automation
-   - `HIGH`: heavily used access, a used entitlement or UC privilege, or an admin-only action done by hand
+   - `HIGH`: heavily used access, a human losing `workspace-access` or `databricks-sql-access`, a used entitlement
+     or UC privilege, or an admin-only action done by hand
    - `MEDIUM` / `LOW`: lighter or no recent use · `INFO`: ownership risk (does not break)
-4. **Recommend**: each delta goes into one of three buckets:
+4. **Recommend**: each delta goes into one of three buckets (or `COVERED`, when your permission set already fixes it):
    - `POWER_USERS_GRANT`: a grant for the group. Grants that rebuild admin bit by bit are flagged `scope_creep`.
    - `MOVE_TO_SP`: automation tied to a person. Re-own it or set its `run_as` to an SP, and grant the SP what it needs.
    - `PROCESS_CHANGE`: tasks that can't be delegated. Route them to SP + Terraform PR, account group managers, or Entra PIM JIT.
@@ -112,20 +116,22 @@ To leave the target completely untouched, run from a separate **results workspac
 - `--mode overwrite` replaces this workspace's earlier rows and keeps other workspaces' rows. Old rows are deleted
   only after the new run is fully written.
 
-**Dashboard**: one page, "What breaks and how to fix it". From the top:
+**Dashboard**: "Admin to power_users readiness", one page. From the top:
 - filters for workspace, status, what breaks, person and fix type. Workspaces are listed by name, read from
-  `system.access.workspaces_latest`; if the running identity can't read it, the workspace URL is shown instead
-  (with a warning);
+  `system.access.workspaces_latest`; if the running identity can't read it, the host (without `https://`) is shown
+  instead, with a warning;
 - four counters: breaks with high impact, breaks with lower impact, covered by your permission set, and keeps
   working but review;
-- two charts and the detail table (one row per break);
+- two charts and the detail table, "What breaks and how to fix it" (one row per break);
 - **Fix summary**: one row per fix type with what to do, who does it, how many actions and how many breaks it fixes;
 - **Action plan**: the numbered actions behind the summary. Doing all of them fixes every open break;
 - the run's details and warnings (About this run).
 
-The workspace and fix type filters apply to every table. Status, what breaks and person filter only the detail table.
+The workspace filter applies to every table, the fix type filter to every table except About this run. Status, what
+breaks and person filter only the detail table.
 
-The dashboard is locked to `src/admin_to_power_user/dashboard.lvdash.json`. Every run creates it, or updates it to
+The dashboard is locked to `src/admin_to_power_user/dashboard.lvdash.json`. Every run (except with `--no-dashboard`,
+which the job's per-workspace tasks use) creates it, or updates it to
 exactly that definition, at `<folder>/<name>.lvdash.json`, and publishes it. Edits made in the UI are overwritten on
 the next run, so change the file instead (the output schema is written as `` `__CATALOG__`.`__SCHEMA__` ``).
 It is published without embedded credentials, so viewers need CAN_VIEW on the dashboard and SELECT on the schema.
@@ -222,7 +228,8 @@ overwrites UI changes.
 - **One target workspace per run.** Run the tool once for each workspace. Results from several targets can go to
   one results workspace (`--home-profile`).
 - **Identity**: run it as an identity with workspace admin on the target (ideally the admin SP), with `SELECT` on
-  `system.access.audit` and `system.lakeflow.*` for the usage data, `USE CATALOG` + `CREATE SCHEMA` (or
+  `system.access.audit` and `system.lakeflow.*` for the usage data, on `system.access.workspaces_latest` for workspace
+  names (and to find a target given by ID), `USE CATALOG` + `CREATE SCHEMA` (or
   `USE SCHEMA` + `CREATE TABLE` + `MODIFY`) on the output, and `CAN_USE` on the warehouse. With
   `--home-profile`, everything except workspace admin is needed in the results workspace, not in the target.
 - **Not covered yet**: legacy Hive metastore table ACLs, serving endpoints, apps, MLflow experiments/models

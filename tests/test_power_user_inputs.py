@@ -203,6 +203,42 @@ def test_make_read_only_blocks_before_sending():
     assert len(sent) == 1
 
 
+def test_guard_holds_for_real_sdk_calls(monkeypatch):
+    """The guard wraps ApiClient.do. If an SDK version ever sent requests another way, writes would get through:
+    drive real SDK methods and fail if anything other than a GET reaches the network."""
+    import requests
+    from databricks.sdk import WorkspaceClient
+    from databricks.sdk.service import iam
+
+    sent = []
+
+    def send(self, request, **kwargs):
+        sent.append(request.method + " " + request.url)
+        response = requests.Response()
+        response.status_code, response._content = 200, b"{}"
+        response.headers["Content-Type"] = "application/json"
+        response.request = request
+        return response
+
+    monkeypatch.setattr(requests.Session, "send", send)
+    w = make_read_only(WorkspaceClient(host="https://adb-1.1.azuredatabricks.net", token="not-a-real-token"))
+    writes = [
+        lambda: w.clusters.permanent_delete("c1"),
+        lambda: w.jobs.run_now(1),
+        lambda: w.permissions.set("clusters", "c1", access_control_list=[
+            iam.AccessControlRequest(group_name="users", permission_level=iam.PermissionLevel.CAN_MANAGE)]),
+        lambda: w.workspace.delete("/Users/x"),
+        lambda: w.secrets.put_secret("s", "k", string_value="v"),
+        lambda: w.statement_execution.execute_statement(statement="DROP TABLE main.x.y", warehouse_id="wh"),
+    ]
+    for write in writes:
+        with pytest.raises(ReadOnlyViolation):
+            write()
+    w.clusters.get("c1")
+    assert all(r.startswith("GET ") for r in sent), sent  # the SDK's own config discovery is a GET too
+    assert any(r.endswith("/api/2.1/clusters/get?cluster_id=c1") for r in sent), sent
+
+
 def test_target_client_without_sql_only_reads():
     check_request("GET", "/api/2.1/jobs/list", None, allow_sql=False)
     with pytest.raises(ReadOnlyViolation, match="target workspace"):
@@ -261,7 +297,7 @@ def test_cli_with_admin_and_structured_permission_file(tmp_path, monkeypatch, ca
     perms.write_text("entitlements: [databricks-sql-access]\n"
                      "grants:\n  - {object_type: clusters, object_name: shared, level: CAN_RESTART}\n"
                      "  - {object_type: secret-scopes, object_id: prod, level: READ}\n")
-    rc = cli.main(["--admin", "sp-admin", "--permissions", str(perms), "--workspace-id", "1",
+    rc = cli.main(["--admin", "sp-admin", "--permissions", str(perms), "--workspace", "1",
                    "--catalog", "c", "--schema", "s"])
     assert rc == 0
     load = lambda t: output[t]  # noqa: E731
@@ -288,8 +324,8 @@ def test_cli_refuses_wrong_workspace_id(tmp_path, monkeypatch):
     from test_end_to_end import fake_workspace
 
     monkeypatch.setattr(cli, "workspace_client", lambda host, profile, **k: fake_workspace())
-    with pytest.raises(SystemExit, match="--workspace-id"):
-        cli.main(["--admin", "sp-admin", "--workspace-id", "999", "--catalog", "c", "--schema", "s"])
+    with pytest.raises(SystemExit, match="but --workspace is 999"):
+        cli.main(["--admin", "sp-admin", "--workspace", "999", "--catalog", "c", "--schema", "s"])
 
 
 def _fake(me="alice@contoso.com", warehouses=()):

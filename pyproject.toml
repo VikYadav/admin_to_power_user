@@ -2,10 +2,14 @@
 name = "admin-to-power-user"
 version = "0.1.0"
 description = "Read-only: predict what breaks when workspace admins move to a power_users group, and recommend fixes"
+readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "databricks-sdk>=0.162.0",  # serverless has an older SDK preinstalled; this forces the tested one
+    # The read-only guard wraps SDK internals (ApiClient.do): pin the tested version, and bump it only after the
+    # tests pass on the new one (test_guard_holds_for_real_sdk_calls). This also overrides the older SDK that
+    # serverless job environments have preinstalled.
+    "databricks-sdk~=0.162.0",
     "pyyaml>=6.0",
 ]
 

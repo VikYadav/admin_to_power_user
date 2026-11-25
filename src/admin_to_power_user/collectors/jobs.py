@@ -1,4 +1,5 @@
-"""Jobs whose run_as (or creator) is an in-scope admin, and everything they depend on."""
+"""Jobs that run as an in-scope admin, and everything they depend on. Jobs an in-scope admin created but that run
+as someone else are only an ownership risk."""
 
 from __future__ import annotations
 

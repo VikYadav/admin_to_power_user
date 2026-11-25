@@ -44,15 +44,15 @@ def deploy(ww, scope: WriteScope, warehouse_id: str, name: str = DEFAULT_NAME) -
     serialized = json.dumps(build(scope.prefix))
     if existing:
         scope.dashboard_ids.add(existing)
-        ww.lakeview.update(existing, Dashboard(display_name=name, serialized_dashboard=serialized,
-                                               warehouse_id=warehouse_id))
+        ww.lakeview.update(dashboard_id=existing, dashboard=Dashboard(
+            display_name=name, serialized_dashboard=serialized, warehouse_id=warehouse_id))
         dashboard_id = existing
     else:
-        created = ww.lakeview.create(Dashboard(display_name=name, parent_path=folder,
-                                               serialized_dashboard=serialized, warehouse_id=warehouse_id))
+        created = ww.lakeview.create(dashboard=Dashboard(
+            display_name=name, parent_path=folder, serialized_dashboard=serialized, warehouse_id=warehouse_id))
         dashboard_id = created.dashboard_id
         scope.dashboard_ids.add(dashboard_id)
     # Viewers query with their own credentials: they need CAN_VIEW on the dashboard and SELECT on the schema.
-    ww.lakeview.publish(dashboard_id, embed_credentials=False, warehouse_id=warehouse_id)
+    ww.lakeview.publish(dashboard_id=dashboard_id, embed_credentials=False, warehouse_id=warehouse_id)
     host = ww.config.host.rstrip("/")
     return dashboard_id, f"{host}/dashboardsv3/{dashboard_id}/published"

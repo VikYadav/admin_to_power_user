@@ -5,7 +5,7 @@ description = "Read-only: predict what breaks when workspace admins move to a po
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "databricks-sdk>=0.40.0",
+    "databricks-sdk>=0.162.0",  # serverless has an older SDK preinstalled; this forces the tested one
     "pyyaml>=6.0",
 ]
 

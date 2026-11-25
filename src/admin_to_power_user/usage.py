@@ -100,6 +100,13 @@ class Usage:
             WHERE {_window(self.s.workspace_id, self.days)}""")
         return bool(rows) and int(rows[0]["n"]) > 0
 
+    def workspace_name(self) -> str:
+        """The workspace's display name ('' if the system table has no row for it)."""
+        rows = self.r.query(f"""
+            SELECT workspace_name FROM system.access.workspaces_latest
+            WHERE workspace_id = {lit(self.s.workspace_id)}""")
+        return str(rows[0]["workspace_name"] or "") if rows else ""
+
     def job_runs(self) -> None:
         rows = self.r.query(f"""
             SELECT CAST(job_id AS STRING) AS job_id, COUNT(DISTINCT run_id) AS runs,
@@ -202,6 +209,16 @@ class Usage:
         self.s.uc_actions = [{"principal_key": self.names.key(r["principal"]), "action_name": r["action_name"],
                               "privilege": UC_ACTIONS[r["action_name"]], "n": int(r["n"]),
                               "last_seen": r["last_seen"]} for r in rows]
+
+
+def workspace_url(runner: SqlRunner, workspace_id: str) -> Optional[str]:
+    """A workspace's URL from system.access.workspaces_latest (None if the account has no such workspace)."""
+    rows = runner.query(f"""
+        SELECT workspace_url FROM system.access.workspaces_latest WHERE workspace_id = {lit(workspace_id)}""")
+    url = str(rows[0]["workspace_url"] or "").strip() if rows else ""
+    if not url:
+        return None
+    return url if url.startswith(("https://", "http://")) else f"https://{url}"
 
 
 def pick_warehouse(w) -> Optional[tuple[str, str]]:

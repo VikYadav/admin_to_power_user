@@ -66,13 +66,14 @@ from admin_to_power_user.dashboard import DEFAULT_NAME, deploy
 from admin_to_power_user.readonly import WriteScope
 from admin_to_power_user.simulator import Simulator
 from admin_to_power_user.uc_sink import TextArtifact, UcSink
-from admin_to_power_user.usage import Usage, WarehouseRunner, pick_warehouse
+from admin_to_power_user.usage import Usage, WarehouseRunner, pick_warehouse, workspace_url
 
 
 @dataclasses.dataclass
 class RunInfo:
     workspace_host: str
     workspace_id: str
+    workspace_name: str  # shown in the dashboard; the host when the name isn't readable
     power_users_group: str
     retained_admins: str
     permission_set_size: int
@@ -101,6 +102,8 @@ def collect(w, cfg: Config, warehouse_id: str, home=None) -> Snapshot:
     collect_sql_objects(w, snapshot, names)
     _optional(snapshot, "notebook scan", scan_notebooks, w, snapshot, cfg, targets)
     usage = Usage(WarehouseRunner(home or w, warehouse_id), snapshot, names, cfg.lookback_days)
+    _optional(snapshot, "workspace name (needs SELECT on system.access.workspaces_latest)", _set_workspace_name,
+              usage, snapshot)
     if home is not None and home is not w:
         _optional(snapshot, "audit visibility check", _check_audit_visible, usage, snapshot, home)
     usage.collect(cfg.admin_only_actions)
@@ -110,6 +113,15 @@ def collect(w, cfg: Config, warehouse_id: str, home=None) -> Snapshot:
     print(f"[collect] {len(snapshot.dependencies)} dependencies, {len(snapshot.acls)} ACLs, "
           f"{len(snapshot.tokens)} tokens")
     return snapshot
+
+
+def _set_workspace_name(usage: Usage, snapshot: Snapshot) -> None:
+    snapshot.workspace_name = usage.workspace_name()
+
+
+def workspace_label(snapshot: Snapshot) -> str:
+    """The workspace's display name, else its host without the scheme."""
+    return snapshot.workspace_name or re.sub(r"^https?://", "", snapshot.workspace_host).rstrip("/")
 
 
 def _check_audit_visible(usage: Usage, snapshot: Snapshot, home) -> None:
@@ -142,6 +154,14 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         cfg.retained_admins.append(RetainedAdmin("auto", ref))
     if args.permissions:
         cfg.permission_set = load_permission_file(args.permissions)
+    if args.workspace:
+        if args.workspace_host or args.workspace_id:
+            raise SystemExit("Pass the target once: --workspace, or --workspace-host / --workspace-id.")
+        ref = args.workspace.strip()
+        if ref.isdigit():
+            cfg.workspace_id = ref
+        else:
+            cfg.workspace_host = ref
     if args.power_users_group:
         cfg.power_users_group = args.power_users_group
     if args.workspace_id:
@@ -181,6 +201,20 @@ def resolve_warehouse(w, warehouse_id: str | None) -> str:
     return picked[0]
 
 
+def lookup_workspace_url(home, warehouse_id: str, workspace_id: str) -> str:
+    """The URL of a target given by ID, from the results workspace's system tables (same account)."""
+    try:
+        url = workspace_url(WarehouseRunner(home, warehouse_id), workspace_id)
+    except Exception as e:
+        raise SystemExit(f"Could not look up workspace {workspace_id} in system.access.workspaces_latest ({e}). "
+                         "Pass its URL instead, or grant SELECT on that table.")
+    if not url:
+        raise SystemExit(f"Workspace {workspace_id} is not in system.access.workspaces_latest: check the ID (the "
+                         "workspace must be in the same account as the results workspace), or pass its URL.")
+    print(f"[target] workspace {workspace_id} is {url}")
+    return url
+
+
 def publish_dashboard(cfg: Config, args: argparse.Namespace, split: bool) -> int:
     """--dashboard-only: create or update the dashboard over existing results, without analysing anything."""
     home = workspace_client(args.home_host, args.home_profile) if split else \
@@ -204,10 +238,14 @@ def analyze(args: argparse.Namespace) -> int:
     sp_auth = (args.target_client_id, args.target_secret_scope, args.target_secret_key)
     if any(sp_auth) and not all(sp_auth):
         raise SystemExit("--target-client-id, --target-secret-scope and --target-secret-key go together.")
-    if all(sp_auth) and not (split and cfg.workspace_host):
-        raise SystemExit("--target-client-id needs --workspace-host and a results workspace "
+    if all(sp_auth) and not (split and (cfg.workspace_host or cfg.workspace_id)):
+        raise SystemExit("--target-client-id needs the target (--workspace <URL or ID>) and a results workspace "
                          "(--home-current, --home-profile or --home-host).")
     home = workspace_client(args.home_host, args.home_profile) if split else None
+    warehouse_id = None
+    if split and cfg.workspace_id and not cfg.workspace_host:  # target given by ID: find its URL first
+        warehouse_id = resolve_warehouse(home, args.warehouse_id)
+        cfg.workspace_host = lookup_workspace_url(home, warehouse_id, cfg.workspace_id)
     if all(sp_auth):  # the secret is read from the results workspace and only kept in memory
         w = target_client(cfg.workspace_host, args.target_client_id,
                           read_secret(home, args.target_secret_scope, args.target_secret_key))
@@ -226,12 +264,12 @@ def analyze(args: argparse.Namespace) -> int:
     ws_id = str(w.get_workspace_id())
     if cfg.workspace_id and cfg.workspace_id != ws_id:
         raise SystemExit(f"Connected to workspace {ws_id} ({w.config.host}) but --workspace-id is "
-                         f"{cfg.workspace_id}. Check --workspace-host / --profile.")
+                         f"{cfg.workspace_id}. Check --workspace / --profile.")
     home_id = str(home.get_workspace_id()) if split else ws_id
     if split:
         print(f"[target] {w.config.host} (workspace {ws_id}): read-only, no SQL")
         print(f"[results] {home.config.host} (workspace {home_id}): warehouse, output tables and dashboard")
-    warehouse_id = resolve_warehouse(home, args.warehouse_id)
+    warehouse_id = warehouse_id or resolve_warehouse(home, args.warehouse_id)
     home_me = (home.current_user.me().user_name or "") if split else me
     folder = args.dashboard_folder or f"/Users/{home_me}"
     scope = WriteScope(args.catalog, args.schema, folder)
@@ -260,7 +298,8 @@ def analyze(args: argparse.Namespace) -> int:
 
     relevant = {(d.object_type, d.object_id): d.object_name for d in snapshot.dependencies}
     tables = [
-        ("runs", [RunInfo(snapshot.workspace_host, snapshot.workspace_id, cfg.power_users_group, retained,
+        ("runs", [RunInfo(snapshot.workspace_host, snapshot.workspace_id, workspace_label(snapshot),
+                          cfg.power_users_group, retained,
                           cfg.permission_set.size, cfg.lookback_days, summary.status,
                           " | ".join(snapshot.warnings))], RunInfo),
         ("principals", principal_rows(snapshot, cfg), PrincipalRow),
@@ -287,7 +326,7 @@ def analyze(args: argparse.Namespace) -> int:
     sink.finish()
     url = "skipped (--no-dashboard)" if args.no_dashboard else deploy(ww, scope, warehouse_id, args.dashboard_name)[1]
 
-    print(f"\n=== {snapshot.workspace_host} (workspace {snapshot.workspace_id}) : {summary.status} ===")
+    print(f"\n=== {workspace_label(snapshot)} (workspace {snapshot.workspace_id}) : {summary.status} ===")
     print(f"retained admins: {retained}")
     print(f"admins moving to {cfg.power_users_group}: {summary.admins_in_scope} ({summary.humans_in_scope} humans)")
     print(f"would fail: {summary.blockers} BLOCKER, {summary.high} HIGH | medium {summary.medium}, "
@@ -330,6 +369,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="SQL warehouse for system tables and output, in the results workspace (default: auto)")
     p.add_argument("--lookback-days", type=int, default=None, help="usage window (default: 90)")
     p.add_argument("--power-users-group", default=None, help="default: power_users")
+    p.add_argument("--workspace", default=None, metavar="URL_OR_ID",
+                   help="target workspace URL or ID; with a results workspace an ID is enough (its URL is looked "
+                        "up in system.access.workspaces_latest), otherwise it is checked against --profile")
     p.add_argument("--workspace-host", default=None, help="default: the profile's workspace")
     p.add_argument("--workspace-id", default=None, help="expected workspace id (safety check)")
     p.add_argument("--home-profile", default=None,

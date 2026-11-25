@@ -293,6 +293,7 @@ class Snapshot:
 
     workspace_id: str
     workspace_host: str
+    workspace_name: str = ""  # display name, if system.access.workspaces_latest is readable
     principals: dict[str, Principal] = field(default_factory=dict)
     memberships: dict[str, set[str]] = field(default_factory=dict)  # member key -> direct parent groups
     in_scope: dict[str, str] = field(default_factory=dict)  # principal key -> reason

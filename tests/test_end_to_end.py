@@ -105,6 +105,8 @@ def test_analyze_end_to_end(tmp_path, monkeypatch, capsys, output):
     assert summary["status"] == "NOT_READY" and summary["admins_in_scope"] == 1
     assert {p["principal"] for p in load("principals") if p["in_scope"]} == {"user:alice@contoso.com"}
     assert output["artifacts"][0]["name"] == "suggested_permissions.yaml"
+    [run] = load("runs")
+    assert run["workspace_name"] == "adb-1.1.azuredatabricks.net"  # no name readable here: the host stands in
     plan = output["action_plan"]
     assert sum(a["breaks_resolved"] for a in plan) == sum(1 for d in deltas if d["breaks"] and not d["covered_by"])
     assert plan[0]["step"] == 1 and plan[0]["workspace_id"] == "1"

@@ -16,7 +16,7 @@ dashboard, multi-workspace runs, the job mode, and assumptions to check in your 
 
 | Input | How | Default |
 |---|---|---|
-| Workspace | `--profile` (or `--workspace-host`) | the default profile's workspace |
+| Workspace | `--profile`, or `--workspace <URL or ID>` (an ID alone needs a results workspace, to look up its URL) | the default profile's workspace |
 | Results workspace (warehouse, tables, dashboard) | `--home-profile` (or `--home-host`) | the target workspace |
 | Where results go | `--catalog`, `--schema` (required; the schema is created if missing) | |
 | Append or overwrite | `--mode append` / `--mode overwrite` | append |
@@ -100,7 +100,7 @@ To leave the target completely untouched, run from a separate **results workspac
 
 | Table | Holds |
 |---|---|
-| `runs`, `readiness_summary` | One row per run: workspace, who stays admin, readiness counts, warnings |
+| `runs`, `readiness_summary` | One row per run: workspace (ID, URL and name), who stays admin, readiness counts, warnings |
 | `deltas`, `recommendations` | What breaks, and the fix for each item |
 | `action_plan` | The to-do list: one row per action, with who does it, how many breaks it fixes, and the `delta_ids` it fixes |
 | `proposed_power_user_grants`, `move_to_sp`, `process_changes` | The fixes rolled up by type |
@@ -113,7 +113,9 @@ To leave the target completely untouched, run from a separate **results workspac
   only after the new run is fully written.
 
 **Dashboard**: one page, "What breaks and how to fix it". From the top:
-- filters for workspace, status, what breaks, person and fix type;
+- filters for workspace, status, what breaks, person and fix type. Workspaces are listed by name, read from
+  `system.access.workspaces_latest`; if the running identity can't read it, the workspace URL is shown instead
+  (with a warning);
 - four counters: breaks with high impact, breaks with lower impact, covered by your permission set, and keeps
   working but review;
 - two charts and the detail table (one row per break);
@@ -168,7 +170,7 @@ the tool installed from the wheel built at deploy time:
 
 | Task | What it does |
 |---|---|
-| `assess` (for each workspace) | `--workspace-host <target> --home-current --target-client-id … --no-dashboard`: reaches the target as the SP with its OAuth secret (GET only), runs the SQL and writes the results in w1 |
+| `assess` (for each workspace) | `--workspace <target ID or URL> --home-current --target-client-id … --no-dashboard`: reaches the target as the SP with its OAuth secret (GET only), runs the SQL and writes the results in w1 |
 | `publish_dashboard` | runs after all of them (even if some failed) with `--dashboard-only`, so the dashboard is published once |
 
 `--admin` isn't passed, so the SP the job runs as is the admin that stays. The permission set is
@@ -178,7 +180,7 @@ the tool installed from the wheel built at deploy time:
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `workspaces` | yes | | JSON list of target workspace URLs, as a string; one `for_each` iteration each |
+| `workspaces` | yes | | JSON list of target workspace IDs or URLs, as a string; one `for_each` iteration each. An ID's URL is looked up in `system.access.workspaces_latest` |
 | `admin_sp_application_id` | yes | | Application (client) ID of the admin SP. It is the job's `run_as` and gets read access to the bundle files; its home folder holds the dashboard |
 | `catalog` | yes | | Catalog for the result tables (it must exist) |
 | `warehouse_id` | yes | | SQL warehouse in w1 for system tables, result tables and the dashboard |

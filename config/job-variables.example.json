@@ -1,5 +1,5 @@
 {
-  "workspaces": "[\"https://adb-1111111111111111.1.azuredatabricks.net\", \"https://adb-2222222222222222.2.azuredatabricks.net\"]",
+  "workspaces": "[\"1111111111111111\", \"2222222222222222\"]",
   "admin_sp_application_id": "00000000-0000-0000-0000-000000000000",
   "catalog": "platform_admin",
   "warehouse_id": "0123456789abcdef"

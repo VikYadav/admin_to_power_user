@@ -154,15 +154,17 @@ so your workspace URLs and IDs stay out of the repository:
 
 ```json
 {
-  "workspaces": "[\"https://adb-111.1.azuredatabricks.net\", \"https://adb-222.2.azuredatabricks.net\"]",
+  "workspaces": "[\"1111111111111111\", \"2222222222222222\"]",
   "admin_sp_application_id": "<SP id>",
   "catalog": "<catalog>",
   "warehouse_id": "<warehouse id>"
 }
 ```
 
-`workspaces` is a JSON list written as a string. Start with one non-production workspace. Optional variables
-(add them to the same file only to change the default):
+`workspaces` is a JSON list, written as a string, of **workspace IDs** (the number after `?o=` in the workspace's
+URL, also shown in the account console) or workspace URLs; you can mix both. The job looks up each ID's URL in
+`system.access.workspaces_latest`, which the SP can read after step 4. Start with one non-production workspace.
+Optional variables (add them to the same file only to change the default):
 
 | Variable | Default | Change it to |
 |---|---|---|

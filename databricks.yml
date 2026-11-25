@@ -22,7 +22,7 @@ artifacts:
 
 variables:
   workspaces:
-    description: 'JSON list of target workspace URLs, e.g. ["https://adb-111.1.azuredatabricks.net"]'
+    description: 'JSON list of target workspace IDs or URLs, e.g. ["1111111111111111", "https://adb-222.2.azuredatabricks.net"]'
   admin_sp_application_id:
     description: Application (client) ID of the admin service principal the job runs as
   catalog:

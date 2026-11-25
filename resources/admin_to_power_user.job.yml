@@ -31,7 +31,7 @@ resources:
                 package_name: admin_to_power_user
                 entry_point: admin-to-power-user
                 parameters:
-                  - --workspace-host
+                  - --workspace
                   - "{{input}}"
                   - --home-current
                   - --target-client-id

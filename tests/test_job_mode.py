@@ -2,6 +2,7 @@
 the dashboard published once, and concurrent writers retried."""
 
 import base64
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -104,12 +105,60 @@ def test_dashboard_only_skips_the_analysis(monkeypatch, capsys, output):
     assert "dashboard over c.s: https://" in capsys.readouterr().out
 
 
+def _ids(monkeypatch, urls):
+    """Answer the workspace URL lookup in the results workspace from `urls` (workspace id -> URL)."""
+    looked_up = []
+
+    class Runner:
+        def __init__(self, w, warehouse_id):
+            pass
+
+        def query(self, sql):
+            if "workspace_url" not in sql:
+                return []
+            wid = sql.split("workspace_id = '", 1)[1].split("'", 1)[0]
+            looked_up.append(wid)
+            return [{"workspace_url": urls[wid]}] if wid in urls else []
+
+    monkeypatch.setattr(cli, "WarehouseRunner", Runner)
+    return looked_up
+
+
+def test_job_mode_accepts_a_workspace_id(monkeypatch, capsys, output):
+    home, target, seen = _job(monkeypatch)
+    looked_up = _ids(monkeypatch, {"1": "adb-1.1.azuredatabricks.net"})  # stored without a scheme
+    args = ["--workspace", "1"] + JOB_ARGS[2:]
+    assert cli.main(args + ["--no-dashboard"]) == 0
+    assert looked_up == ["1"]
+    assert seen["target"] == ("https://adb-1.1.azuredatabricks.net", SP, SECRET)
+    assert output["runs"][0]["workspace_id"] == "1"
+    assert "[target] workspace 1 is https://adb-1.1.azuredatabricks.net" in capsys.readouterr().out
+
+
+def test_unknown_workspace_id_stops_before_connecting_to_it(monkeypatch):
+    _, _, seen = _job(monkeypatch)
+    _ids(monkeypatch, {})
+    with pytest.raises(SystemExit, match="is not in system.access.workspaces_latest"):
+        cli.main(["--workspace", "999"] + JOB_ARGS[2:])
+    assert "target" not in seen
+
+
+def test_job_passes_each_list_entry_to_workspace():
+    import yaml
+
+    path = Path(__file__).parents[1] / "resources" / "admin_to_power_user.job.yml"
+    job = yaml.safe_load(path.read_text())["resources"]["jobs"]["admin_to_power_user"]
+    params = job["tasks"][0]["for_each_task"]["task"]["python_wheel_task"]["parameters"]
+    assert params[params.index("--workspace") + 1] == "{{input}}"
+
+
 @pytest.mark.parametrize("args, message", [
     (["--workspace-host", "https://x", "--home-current", "--target-client-id", SP], "go together"),
     (["--workspace-host", "https://x", "--target-client-id", SP, "--target-secret-scope", "a",
       "--target-secret-key", "b"], "results workspace"),
     (["--home-current", "--target-client-id", SP, "--target-secret-scope", "a", "--target-secret-key", "b"],
-     "--workspace-host"),
+     "needs the target"),
+    (["--workspace", "1", "--workspace-id", "1"], "Pass the target once"),
 ])
 def test_job_flags_are_checked_before_connecting(monkeypatch, args, message):
     monkeypatch.setattr(cli, "workspace_client", lambda *a, **k: pytest.fail("connected before checking flags"))

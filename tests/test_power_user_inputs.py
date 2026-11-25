@@ -231,6 +231,26 @@ def test_every_usage_query_passes_the_guard(snapshot):
     assert len(seen) == 6 and not snapshot.warnings
 
 
+def test_workspace_name_comes_from_the_system_table_else_the_host(snapshot):
+    from admin_to_power_user.collectors.identities import NameResolver
+
+    class Names:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def query(self, sql):
+            assert is_read_only_sql(sql) and "system.access.workspaces_latest" in sql
+            return self.rows
+
+    assert Usage(Names([{"workspace_name": "Sales prod"}]), snapshot, NameResolver(snapshot), 90) \
+        .workspace_name() == "Sales prod"
+    assert Usage(Names([]), snapshot, NameResolver(snapshot), 90).workspace_name() == ""
+    assert cli.workspace_label(Snapshot("1", "https://adb-1.1.azuredatabricks.net/")) == "adb-1.1.azuredatabricks.net"
+    named = Snapshot("1", "https://adb-1.1.azuredatabricks.net")
+    named.workspace_name = "Sales prod"
+    assert cli.workspace_label(named) == "Sales prod"
+
+
 # ---- end to end with the new inputs ----------------------------------------------------------
 
 def test_cli_with_admin_and_structured_permission_file(tmp_path, monkeypatch, capsys, output):

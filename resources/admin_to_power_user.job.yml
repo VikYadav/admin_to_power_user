@@ -6,10 +6,10 @@ resources:
         Predicts what breaks when workspace admins move to power_users, for every workspace in
         var.workspaces. Read-only on the targets; results in ${var.catalog}.${var.schema} and one dashboard here.
       max_concurrent_runs: 1
-      schedule:  # weekly, to track progress; turn it on when you want it
+      schedule:  # weekly, to track progress; turn it on with var.schedule_status
         quartz_cron_expression: "0 0 6 ? * MON"
         timezone_id: UTC
-        pause_status: PAUSED
+        pause_status: ${var.schedule_status}
 
       environments:
         - environment_key: default

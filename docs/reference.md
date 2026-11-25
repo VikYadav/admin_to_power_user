@@ -160,44 +160,25 @@ admin-to-power-user --profile w3 --home-profile w1 --catalog main --schema admin
 
 ## Run as a Databricks job
 
-Deploy the tool once as a job in a results workspace (w1). It runs **as the admin service principal** and assesses
-a list of target workspaces, one `for_each` iteration each. Results for all of them land in one schema and one
-dashboard in w1, and nothing is created in the targets. The bundle is `databricks.yml` + `resources/`:
+Setup, deployment and sharing are step by step in the [README](../README.md#run-as-a-scheduled-job). This section
+describes what the bundle (`databricks.yml` + `resources/`) deploys.
+
+The job runs **as the admin service principal** in the results workspace (w1), on serverless jobs compute, with
+the tool installed from the wheel built at deploy time:
 
 | Task | What it does |
 |---|---|
 | `assess` (for each workspace) | `--workspace-host <target> --home-current --target-client-id … --no-dashboard`: reaches the target as the SP with its OAuth secret (GET only), runs the SQL and writes the results in w1 |
 | `publish_dashboard` | runs after all of them (even if some failed) with `--dashboard-only`, so the dashboard is published once |
 
-The weekly schedule is deployed **paused**. Turn it on to track progress.
+`--admin` isn't passed, so the SP the job runs as is the admin that stays. The permission set is
+`config/power_users.yaml`, deployed with the bundle. Only one run happens at a time (`max_concurrent_runs: 1`).
 
-**One-time setup** (by an admin; the tool never does this):
-1. An account-level service principal, assigned to w1 and to every target, and **workspace admin in each target**.
-2. A Databricks **OAuth secret** for it (account console → Service principals → Secrets), stored in a secret scope
-   in w1 that **only the SP can read** (default scope `admin_to_power_user`, key `sp-oauth-secret`).
-3. The SP in w1 has `USE CATALOG` + `CREATE SCHEMA` on the catalog, `SELECT` on `system.access.audit` and
-   `system.lakeflow.*`, and `CAN_USE` on the warehouse.
-4. You (the deployer) have the **Service principal: User** role on the SP, so you can set the job's `run_as`.
-5. Targets are in the same account and region as w1 (`system.access.audit` is regional; the run warns otherwise).
-
-**Deploy and run** (`w1` is your Databricks CLI profile for the results workspace):
-
-```bash
-export BUNDLE_VAR_workspaces='["https://adb-111.1.azuredatabricks.net", "https://adb-222.2.azuredatabricks.net"]'
-export BUNDLE_VAR_admin_sp_application_id=<SP application id>
-export BUNDLE_VAR_catalog=<catalog>
-export BUNDLE_VAR_warehouse_id=<w1 warehouse id>
-
-databricks bundle deploy -p w1                    # builds the wheel and deploys the job
-databricks bundle run admin_to_power_user -p w1   # one run over every workspace in the list
-```
-
-**Bundle variables** (`databricks.yml`). Set them as `BUNDLE_VAR_<name>` environment variables or with
-`--var="<name>=<value>"`. `workspaces` has to be an environment variable, because `--var` can't take a JSON list.
+**Variables** (`databricks.yml`):
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `workspaces` | yes | | JSON list of target workspace URLs; one `for_each` iteration each |
+| `workspaces` | yes | | JSON list of target workspace URLs, as a string; one `for_each` iteration each |
 | `admin_sp_application_id` | yes | | Application (client) ID of the admin SP. It is the job's `run_as` and gets read access to the bundle files; its home folder holds the dashboard |
 | `catalog` | yes | | Catalog for the result tables (it must exist) |
 | `warehouse_id` | yes | | SQL warehouse in w1 for system tables, result tables and the dashboard |
@@ -206,16 +187,19 @@ databricks bundle run admin_to_power_user -p w1   # one run over every workspace
 | `secret_key` | no | `sp-oauth-secret` | Key of that secret |
 | `mode` | no | `overwrite` | `overwrite` keeps only the latest run per workspace; `append` keeps every run |
 | `concurrency` | no | `1` | Workspaces assessed at the same time (concurrent Delta write conflicts are retried) |
+| `schedule_status` | no | `PAUSED` | `UNPAUSED` turns on the weekly run (Mondays 06:00 UTC) |
 
-Other inputs:
-- **Permission set:** `config/power_users.yaml`, deployed with the bundle. Edit it and redeploy to change it.
-- **Dashboard:** published to `/Users/<SP application id>/admin_to_power_user`. Viewers need `CAN_VIEW` on it and
-  `SELECT` on the schema.
-- **`UV_DEFAULT_INDEX`:** the bundle builds the wheel with `uv build --wheel`. If your network only reaches PyPI
-  through a mirror, set `UV_DEFAULT_INDEX=<mirror URL>` before deploying.
-- **Authentication** for deploying is the Databricks CLI's (`-p` profile or `DATABRICKS_*` environment variables).
+**Setting them.** When a variable is set in several places, the first one in this list wins:
 
-To add or remove a workspace, change `BUNDLE_VAR_workspaces` and deploy again.
+1. `--var="<name>=<value>"` on `bundle deploy` (it can't hold the `workspaces` list);
+2. `BUNDLE_VAR_<name>` environment variables (the usual choice in CI);
+3. `.databricks/bundle/<target>/variable-overrides.json` (the usual choice on your machine; git ignores it.
+   `config/job-variables.example.json` is a template);
+4. `targets.<target>.variables` in `databricks.yml` (committed: avoid real URLs and IDs in a public repository);
+5. the `default` in `databricks.yml`.
+
+The bundle's only target is `default`. Change values by redeploying, not by editing the job: the next deploy
+overwrites UI changes.
 
 ## Assumptions to verify in your environment
 

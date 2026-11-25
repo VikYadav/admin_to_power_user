@@ -67,31 +67,140 @@ all options, or see [docs/reference.md](docs/reference.md#cli-options).
 5. **Repeat until `READY`**, then make the move yourself: grant the set to `power_users`, add the people to it, and
    remove them from `admins`.
 
-## Multiple workspaces
+## Multiple workspaces from your machine
 
-**From your machine:** add `--home-profile w1` to run the SQL and write the results in a separate results
-workspace. The target only gets GET calls, and several targets can share one schema and dashboard.
+Add `--home-profile w1` to run the SQL and write the results in a separate results workspace. The target only gets
+GET calls, and several targets can share one schema and dashboard.
 
 ```bash
 admin-to-power-user --profile w2 --home-profile w1 --catalog main --schema admin_to_power_user --admin <admin SP>
 ```
 
-**As a scheduled job:** deploy the bundle to the results workspace. It runs as the admin SP over a list of
-targets, with a weekly schedule that is deployed paused.
+To do this for many workspaces on a schedule, without running anything locally, use the job below.
+
+## Run as a scheduled job
+
+The tool is deployed once, as a Databricks job, into a **results workspace**. It runs as your **admin service
+principal (SP)**, assesses every workspace in a list, writes all results to one schema and publishes one
+dashboard there. Nothing is created in the assessed workspaces: they only get read (GET) calls.
+
+Placeholders used below: `<results URL>` is the results workspace, `<SP id>` is the SP's application (client) ID,
+`<catalog>` and `<warehouse id>` are in the results workspace.
+
+### 1. Choose the results workspace
+
+Pick one workspace to host the job, the results and the dashboard. It must be in the **same account and region**
+as the workspaces you assess (the audit log is regional) and have **serverless jobs** enabled, with access to PyPI
+to install the tool's dependencies. You need a catalog there for the results (access to it should be restricted)
+and a SQL warehouse; a 2X-Small serverless warehouse is enough.
+
+### 2. Create the service principal (account admin)
+
+Use the SP that will **stay workspace admin after the migration**: the job keeps the SP it runs as.
+
+1. Account console → **User management → Service principals → Add service principal** (skip if you have one).
+2. Account console → **Workspaces** → each workspace you assess → **Permissions** → add the SP as **Admin**.
+3. Same for the results workspace, as **User** (or Admin if you also assess it).
+4. Open the SP → **Credentials & secrets** → **Generate secret**. Copy the secret; it's shown once.
+5. Open the SP → **Permissions** → give yourself the **Service principal: User** role, so you can deploy a job
+   that runs as it.
+
+### 3. Store the secret in the results workspace
+
+The job reads the SP's secret from a secret scope to reach the other workspaces. Only the SP and you (the scope's
+manager) should be able to read it.
 
 ```bash
-export BUNDLE_VAR_workspaces='["https://adb-111.1.azuredatabricks.net", "https://adb-222.2.azuredatabricks.net"]'
-export BUNDLE_VAR_admin_sp_application_id=<SP application id>
-export BUNDLE_VAR_catalog=<catalog>
-export BUNDLE_VAR_warehouse_id=<warehouse id>
-
-databricks bundle deploy -p w1
-databricks bundle run admin_to_power_user -p w1
+databricks auth login --host <results URL> --profile w1
+databricks secrets create-scope admin_to_power_user -p w1
+databricks secrets put-secret admin_to_power_user sp-oauth-secret -p w1     # paste the secret when prompted
+databricks secrets put-acl admin_to_power_user <SP id> READ -p w1
+databricks secrets list-acls admin_to_power_user -p w1                       # expect only you (MANAGE) and the SP (READ)
 ```
 
-The job needs a one-time setup first: the SP's OAuth secret goes in a secret scope only the SP can read. For that
-setup and the optional variables (`schema`, `secret_scope`, `secret_key`, `mode`, `concurrency`), see
-[docs/reference.md](docs/reference.md#run-as-a-databricks-job).
+OAuth secrets expire. Before yours does, generate a new one and run `put-secret` again.
+
+### 4. Grant the SP access in the results workspace
+
+In the SQL editor, as the catalog owner or a metastore admin:
+
+```sql
+GRANT USE CATALOG, CREATE SCHEMA ON CATALOG <catalog> TO `<SP id>`;
+GRANT USE CATALOG ON CATALOG system TO `<SP id>`;
+GRANT USE SCHEMA, SELECT ON SCHEMA system.access TO `<SP id>`;
+GRANT USE SCHEMA, SELECT ON SCHEMA system.lakeflow TO `<SP id>`;
+```
+
+Then let it use the warehouse:
+
+```bash
+databricks warehouses update-permissions <warehouse id> -p w1 \
+  --json '{"access_control_list": [{"service_principal_name": "<SP id>", "permission_level": "CAN_USE"}]}'
+```
+
+### 5. Get the code and fill in the variables
+
+You need the [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) and
+[uv](https://docs.astral.sh/uv/) (the deploy builds the tool's wheel with it).
+
+```bash
+git clone <this repository> && cd admin_to_power_user
+mkdir -p .databricks/bundle/default
+cp config/job-variables.example.json .databricks/bundle/default/variable-overrides.json
+```
+
+Edit `.databricks/bundle/default/variable-overrides.json`. The CLI reads it on every deploy, and git ignores it,
+so your workspace URLs and IDs stay out of the repository:
+
+```json
+{
+  "workspaces": "[\"https://adb-111.1.azuredatabricks.net\", \"https://adb-222.2.azuredatabricks.net\"]",
+  "admin_sp_application_id": "<SP id>",
+  "catalog": "<catalog>",
+  "warehouse_id": "<warehouse id>"
+}
+```
+
+`workspaces` is a JSON list written as a string. Start with one non-production workspace. Optional variables
+(add them to the same file only to change the default):
+
+| Variable | Default | Change it to |
+|---|---|---|
+| `schema` | `admin_to_power_user` | use another schema name |
+| `secret_scope`, `secret_key` | `admin_to_power_user`, `sp-oauth-secret` | match the names you used in step 3 |
+| `mode` | `overwrite` | `append` to keep every run, e.g. to track progress over weeks |
+| `concurrency` | `1` | `2`–`4` to assess many workspaces faster |
+| `schedule_status` | `PAUSED` | `UNPAUSED` to run every Monday at 06:00 UTC |
+
+Also review the permission set you plan to give `power_users`, in `config/power_users.yaml`. The job uses it.
+
+### 6. Deploy and run
+
+```bash
+databricks bundle validate -p w1                  # checks the configuration
+databricks bundle deploy -p w1                    # builds the wheel and creates the job
+databricks bundle run admin_to_power_user -p w1   # one run over every workspace in the list
+```
+
+The command prints a link to the run. There is one `assess` iteration per workspace: a workspace that fails
+doesn't stop the others, and the dashboard is published at the end either way. If your network only reaches PyPI
+through a mirror, set `UV_DEFAULT_INDEX=<mirror URL>` before deploying.
+
+### 7. Open and share the dashboard
+
+The dashboard, **Admin to power_users readiness**, is in `/Users/<SP id>/admin_to_power_user` in the results
+workspace. Each viewer needs `CAN_VIEW` on it (a workspace admin can share it, since the folder belongs to the SP),
+`USE CATALOG`/`USE SCHEMA` and `SELECT` on `<catalog>.admin_to_power_user`, and `CAN_USE` on the warehouse. Keep this
+list short: the results include admins' emails, PAT IDs and ACLs.
+
+### Changing it later
+
+Edit `variable-overrides.json` (add or remove workspaces, turn on the schedule) or `config/power_users.yaml`, then
+run `databricks bundle deploy -p w1` again. Don't edit the job in the UI: the next deploy overwrites it.
+
+To deploy from CI instead of your machine (recommended once it's set up, see [SECURITY.md](SECURITY.md)), set the
+same values as `BUNDLE_VAR_<name>` pipeline variables, for example `BUNDLE_VAR_catalog`, and run
+`databricks bundle deploy`.
 
 ## Output
 
@@ -101,7 +210,7 @@ contains admins' emails and ACLs, so limit who can read it. See [docs/reference.
 
 ## Documentation
 
-- [docs/reference.md](docs/reference.md): CLI options, how it works, output tables, job setup, assumptions to verify
+- [docs/reference.md](docs/reference.md): CLI options, how it works, output tables, what the job runs, assumptions to verify
 - [SECURITY.md](SECURITY.md): credentials, what the read-only guard covers, how to report a problem
 
 ## Development

@@ -1,10 +1,12 @@
 # Runs admin_to_power_user as a job in this (home) workspace, as the admin service principal, against a list of
 # target workspaces. Results for all of them go to one schema and one dashboard here; nothing is created in the
-# targets. Setup and usage: README, "Run as a Databricks job".
+# targets. Setup and usage: README, "Run as a scheduled job".
 #
-#   export BUNDLE_VAR_workspaces='["https://adb-…"]'  # a JSON list can't be passed with --var
-#   databricks bundle deploy -p <home profile> --var="admin_sp_application_id=…" --var="catalog=…" ...
+#   cp config/job-variables.example.json .databricks/bundle/default/variable-overrides.json   # then fill it in
+#   databricks bundle deploy -p <home profile>
 #   databricks bundle run admin_to_power_user -p <home profile>
+#
+# In CI, set the same values as BUNDLE_VAR_<name> environment variables instead.
 
 bundle:
   name: admin_to_power_user
@@ -42,6 +44,9 @@ variables:
   concurrency:
     description: Workspaces assessed at the same time
     default: 1
+  schedule_status:
+    description: PAUSED (default) or UNPAUSED for the weekly run (Mondays 06:00 UTC)
+    default: PAUSED
 
 run_as:
   service_principal_name: ${var.admin_sp_application_id}

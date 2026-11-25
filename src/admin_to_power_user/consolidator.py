@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-
 import json
 import shlex
+from collections import defaultdict
 
 from admin_to_power_user.model.levels import rank
 from admin_to_power_user.models import (
@@ -231,11 +230,11 @@ def _grant_line(g) -> str:
     return f"{g.level} {g.object_type} {shlex.quote(target) if target != '*' else '*'}"
 
 
-def suggested_permissions_yaml(ps, grants: list[ProposedGrant], include_scope_creep: bool = False) -> str:
+def suggested_permissions_yaml(ps, grants: list[ProposedGrant]) -> str:
     """Your permission set plus the extra grants this run suggests, one permission per line.
 
     Pass the file straight back with --permissions and rerun. Scope-creep suggestions are listed as comments
-    (review them in the dashboard) unless include_scope_creep is set.
+    (review them in the dashboard).
     """
     lines = [_line(e) for e in sorted(ps.entitlements)] + [_line(_grant_line(g)) for g in ps.grants] + \
         [_line(p) for p in sorted(ps.uc_privileges)] + ([_line("token-usage")] if ps.token_usage else [])
@@ -249,14 +248,14 @@ def suggested_permissions_yaml(ps, grants: list[ProposedGrant], include_scope_cr
         elif g.object_type == "authorization":
             text = None if ps.token_usage else "token-usage"
         else:
-            text = f"{g.level} {g.object_type} {g.object_id}"
+            text = f"{g.level} {g.object_type} {shlex.quote(g.object_id)}"
         if text is None:
             continue
         why = f"{g.object_name}; fixes {g.fixes_n_deltas} for {g.admins_affected}" if g.object_name != g.object_id \
             else f"fixes {g.fixes_n_deltas} for {g.admins_affected}"
-        (creep if g.scope_creep and not include_scope_creep else added).append(_line(text, why))
+        (creep if g.scope_creep else added).append(_line(text, why))
     out = ["# power_users permission set: yours" + (" + suggested additions" if added else "") + ".",
-           "# Rerun with: admin-to-power-user analyze ... --permissions <this file>"]
+           "# Rerun with: admin-to-power-user ... --permissions <this file>"]
     out += lines
     if added:
         out += ["", f"# Suggested by this run ({len(added)}):"] + added

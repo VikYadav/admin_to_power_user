@@ -1,213 +1,232 @@
 # admin_to_power_user
 
-> **Not an official Databricks product.** This is a community tool, provided as is under the
-> [Apache License 2.0](LICENSE), without warranty or support. It runs with workspace-admin credentials: read the
-> code and [Security notes](#security-notes) before you use it, and try it on a non-production workspace first.
+Find out what breaks before you take workspace admin away from people in Databricks, and what to do about it.
 
-Goal: no human is workspace admin. The admin service principal (and/or an admin group) stays admin; every
-other member of `admins` moves to an account-level `power_users` group that gets **the permission set you
-choose**. For one target workspace, this tool predicts what would fail after the move, shows what your
-permission set already covers, recommends a fix for everything else, saves the results to a Unity Catalog
-schema you choose, and publishes an AI/BI dashboard over them.
+> **Not an official Databricks product.** Provided as is under the [Apache License 2.0](LICENSE), without warranty
+> or support. It runs with workspace-admin credentials: read the code and [SECURITY.md](SECURITY.md) first, and try
+> it on a non-production workspace.
 
-**It changes nothing except its own output.** Two API clients are used (`readonly.py`):
-- The **analysis client** only reads: GET calls, plus single SELECT statements on the system tables.
-- The **output client** may only create the schema and tables in `<catalog>.<schema>`, insert rows, delete
-  this workspace's older rows (overwrite mode), and create/update/publish the tool's own dashboard in one folder.
+## Why
 
-Any other request (permissions, groups, jobs, clusters, tokens, settings, other schemas) is refused before it is
-sent. Nothing is written to your machine. Running SQL starts the chosen warehouse if it is stopped.
+Workspace admin bypasses every ACL and every workspace setting. A safer model is **no human is workspace admin**.
+Only an admin service principal (or an admin group) keeps the role, and everyone else moves to a `power_users` group
+with a permission set you choose.
 
-To leave the target completely untouched, run from a separate **results workspace** with `--home-profile`
-(see [Running from another workspace](#running-from-another-workspace)). The target then gets only GET calls.
+The risk is in what admins reach without explicit grants. A job that runs as an admin, a PAT used by a script, or a
+cluster created without a policy can fail after the move. This tool finds those cases for you.
+
+## What it does
+
+For each target workspace, it:
+
+- **predicts what breaks** and ranks each break by real usage from the system tables (`BLOCKER` → `LOW`);
+- **checks your permission set**: what it covers, and which entries are unused or match nothing;
+- **builds an action plan**: grants for `power_users`, jobs/pipelines/PATs to move to a service principal, and
+  admin-only tasks that need a process change;
+- **reports readiness**: `READY` means no open `BLOCKER` or `HIGH` break;
+- **saves results** to a Unity Catalog schema and publishes an AI/BI dashboard over them.
+
+It is **read-only**. Every request is checked before it is sent, and anything other than reads and the tool's own
+output (schema, tables, dashboard) is refused. It never makes the move itself.
+
+## Requirements
+
+- Python 3.10+ and [uv](https://docs.astral.sh/uv/); the Databricks CLI
+- `system.access.audit`, `system.access.workspaces_latest` and `system.lakeflow.*` enabled
+- An identity with **workspace admin** on the target (ideally the admin SP), plus `SELECT` on those system tables,
+  `USE CATALOG` + `CREATE SCHEMA` on the output catalog, and `CAN_USE` on a SQL warehouse
 
 ## Quick start
 
 ```bash
 uv venv --python 3.12 && uv pip install -e .
-databricks auth login --profile my-ws            # an identity with workspace admin on the target
+databricks auth login --profile my-ws
 
 admin-to-power-user --profile my-ws --catalog main --schema admin_to_power_user --admin <admin SP client id>
 # -> prints the dashboard URL
 ```
 
-Rerun with your planned permission set to see what it fixes and what still fails:
+`--admin` is who stays admin (an SP client ID or a group name; repeatable). Run `admin-to-power-user --help` for
+all options, or see [docs/reference.md](docs/reference.md#cli-options).
 
-```bash
-admin-to-power-user --profile my-ws --catalog main --schema admin_to_power_user --admin <admin SP client id> \
-    --permissions config/power_users.yaml
-```
+## Usage
 
-| Input | How | Default |
-|---|---|---|
-| Workspace | `--profile` (or `--workspace-host`) | the default profile's workspace |
-| Results workspace (warehouse, tables, dashboard) | `--home-profile` (or `--home-host`) | the target workspace |
-| Where results go | `--catalog`, `--schema` (required; the schema is created if missing) | |
-| Append or overwrite | `--mode append` / `--mode overwrite` | append |
-| Who stays admin | `--admin <SP client id or group name>`, repeatable | the SP running the tool |
-| power_users permissions | `--permissions file.yaml` | none: the run writes a suggested set (`artifacts` table) |
-| SQL warehouse (in the results workspace) | `--warehouse-id` | a running warehouse, else a serverless one |
-| Dashboard location (in the results workspace) | `--dashboard-folder`, `--dashboard-name` | your home folder, "Admin to power_users readiness" |
-| Work already moved to an SP | `--assume-moved job:<id>` (also `pipeline:`, `token:`, `query:`), repeatable | none |
-| Usage window | `--lookback-days` | 90 |
+1. **Baseline:** run without `--permissions` to see everything that would break. The run also saves a suggested
+   permission set in the `artifacts` table.
+2. **Choose a permission set:** start from [`config/power_users.yaml`](config/power_users.yaml) or the
+   suggested set. It has one permission per line:
+   ```yaml
+   - workspace-access                       # entitlement
+   - CAN_USE cluster-policies "Personal*"   # LEVEL OBJECT_TYPE name/id/glob, or *
+   - CAN_RUN /Shared                        # folder and everything below it
+   - CREATE_CATALOG                         # Unity Catalog metastore privilege
+   ```
+3. **Rerun with `--permissions config/power_users.yaml`** to see what your set covers and what still breaks.
+4. **Work through the action plan** in the dashboard, in order. To preview a job you plan to move to an SP, use
+   `--assume-moved job:<id>`.
+5. **Repeat until `READY`**, then make the move yourself: grant the set to `power_users`, add the people to it, and
+   remove them from `admins`.
 
-The permission file is a list with one permission per line (see `config/power_users.yaml`):
+## Multiple workspaces from your machine
 
-```yaml
-- workspace-access                       # entitlement
-- CAN_USE cluster-policies "Personal*"   # LEVEL OBJECT_TYPE name/id/glob, or * for all
-- CAN_USE warehouses *
-- CAN_RUN /Shared                        # folder and everything below it
-- CREATE_CATALOG                         # Unity Catalog metastore privilege
-- token-usage                            # PATs
-```
-
-Members of a group passed to `--admin` stay admin too; the run warns you about any humans among them. If none of the
-admins you keep is in `admins` today, the run reports a BLOCKER, because the move would leave the workspace with
-no admin.
-
-## How it works
-
-1. **Collect** (as the admin SP): users, SPs, nested groups, entitlements; jobs/pipelines/queries/dashboards
-   that run as an admin and everything they depend on (clusters, policies, pools, notebooks, files,
-   warehouses, secret scopes, including `{{secrets/...}}` refs and `dbutils.secrets.get` in notebook code);
-   admins' PATs; UC metastore grants and admin-owned UC objects; ACLs for only those objects.
-2. **Usage** from system tables: job runs, `secrets:getSecret` and other object touches, admin-only actions
-   (with a terraform/SDK vs browser split), cluster creation without a policy, UC `create*` actions.
-3. **Simulate**: each admin's access *today* (implicit admin) vs *after* (groups minus `admins`, plus
-   `power_users` with your permission set). The run happens twice: once with `power_users` as it is today
-   and once with your set added. Anything that fails only without your set is reported as **covered by your
-   permission set** (`covered_by`). Each entry in the set is reported as USED, UNUSED (fixes nothing here) or
-   NOT_FOUND (matches no object), and flagged when it is scope creep. Every remaining shortfall becomes a
-   **delta** with a severity:
-   - `BLOCKER`: a job/pipeline that ran in the lookback window, a PAT that's in use and would be blocked, or an admin-only action run by automation
-   - `HIGH`: heavily used access, a used entitlement or UC privilege, or an admin-only action done by hand
-   - `MEDIUM` / `LOW`: lighter or no recent use · `INFO`: ownership risk (does not break)
-4. **Recommend**: each delta goes into one of three buckets:
-   - `POWER_USERS_GRANT`: a grant for the group. Grants that rebuild admin bit by bit are flagged `scope_creep`.
-   - `MOVE_TO_SP`: automation tied to a person. Re-own it or set its `run_as` to an SP, and grant the SP what it needs.
-   - `PROCESS_CHANGE`: tasks that can't be delegated. Route them to SP + Terraform PR, account group managers, or Entra PIM JIT.
-5. **Consolidate**: readiness (`READY` = no open BLOCKER/HIGH), extra `power_users` grants beyond your set,
-   the move-to-SP list, process changes, and your permission set's coverage. The suggested permission set (your
-   set plus the non-scope-creep additions) is saved in the `artifacts` table, ready to pass back with
-   `--permissions`.
-6. **Action plan**: every open break (it breaks and your set doesn't cover it) is put into exactly one action:
-   one grant per object (at the highest level anyone needs), one move per job, pipeline, PAT or script, and one
-   process change per admin-only task. Actions are numbered worst-first, so doing them in order fixes every open
-   break without reading the breaks one by one.
-
-## Outputs
-
-**Tables** in `<catalog>.<schema>`. Every row carries `run_id`, `run_ts` and `workspace_id`:
-
-| Table | Holds |
-|---|---|
-| `runs`, `readiness_summary` | One row per run: workspace, who stays admin, readiness counts, warnings |
-| `deltas`, `recommendations` | What breaks, and the fix for each item |
-| `action_plan` | The to-do list: one row per action, with who does it, how many breaks it fixes, and the `delta_ids` it fixes |
-| `proposed_power_user_grants`, `move_to_sp`, `process_changes` | The fixes rolled up by type |
-| `permission_set_coverage` | Each entry of your permission set: USED, UNUSED or NOT_FOUND |
-| `artifacts` | The suggested permission set (`suggested_permissions.yaml`), ready to pass back with `--permissions` |
-| `principals`, `relevant_objects`, `acls` | The evidence the analysis used |
-
-- `--mode append` (default) adds each run. The dashboard always shows the latest run per workspace.
-- `--mode overwrite` replaces this workspace's earlier rows and keeps other workspaces' rows. Old rows are deleted
-  only after the new run is fully written.
-
-**Dashboard**: one page, "What breaks and how to fix it". From the top:
-- filters for workspace, status, what breaks, person and fix type;
-- four counters: breaks with high impact, breaks with lower impact, covered by your permission set, and keeps
-  working but review;
-- two charts and the detail table (one row per break);
-- **Fix summary**: one row per fix type with what to do, who does it, how many actions and how many breaks it fixes;
-- **Action plan**: the numbered actions behind the summary. Doing all of them fixes every open break;
-- the run's details and warnings (About this run).
-
-The workspace and fix type filters apply to every table. Status, what breaks and person filter only the detail table.
-
-The dashboard is locked to `src/admin_to_power_user/dashboard.lvdash.json`. Every run creates it, or updates it to
-exactly that definition, at `<folder>/<name>.lvdash.json`, and publishes it. Edits made in the UI are overwritten on
-the next run, so change the file instead (the output schema is written as `` `__CATALOG__`.`__SCHEMA__` ``).
-It is published without embedded credentials, so viewers need CAN_VIEW on the dashboard and SELECT on the schema.
-Granting those is left to you: the tool never changes permissions.
-
-## Running from another workspace
-
-Run everything from one workspace (w1) against others (w2, w3) without creating anything in w2 or w3:
+Add `--home-profile w1` to run the SQL and write the results in a separate results workspace. The target only gets
+GET calls, and several targets can share one schema and dashboard.
 
 ```bash
 admin-to-power-user --profile w2 --home-profile w1 --catalog main --schema admin_to_power_user --admin <admin SP>
-admin-to-power-user --profile w3 --home-profile w1 --catalog main --schema admin_to_power_user --admin <admin SP>
 ```
 
-| | Target (w2, w3) | Results workspace (w1) |
-|---|---|---|
-| REST reads (identities, jobs, ACLs, UC grants, tokens...) | GET only | |
-| System-table queries (filtered to the target's `workspace_id`) | | SELECT on w1's warehouse |
-| Output schema, tables, dashboard | | created / written here |
+To do this for many workspaces on a schedule, without running anything locally, use the job below.
 
-- The target client refuses every SQL statement, not just writes, so a warehouse in the target is never used
-  (nor started). The target still records the GET calls in its own audit log.
-- Every row carries the target's `workspace_id`, so w2 and w3 can share one schema and one dashboard (use its
-  workspace filter). `--mode overwrite` replaces only that workspace's rows.
-- **Same account, and probably the same region:** `system.access.audit` holds workspace-level events only for
-  workspaces in the querying workspace's region. If w1 sees no audit events for the target, the run warns you,
-  because the usage evidence is then missing and severities are understated. Check with
-  `SELECT DISTINCT workspace_id FROM system.access.audit WHERE event_date >= current_date() - 7` on w1.
-- **Identity:** workspace admin on each target. On w1: `SELECT` on the system tables, write access to the
-  output schema, and `CAN_USE` on the warehouse. An account-level SP with OAuth M2M and a profile per
-  workspace works well. The two profiles may use different identities. The default retained admin is the
-  identity on the *target* profile, and the default dashboard folder is the home folder of the identity on the
-  *home* profile.
+## Run as a scheduled job
 
-## Security notes
+The tool is deployed once, as a Databricks job, into a **results workspace**. It runs as your **admin service
+principal (SP)**, assesses every workspace in a list, writes all results to one schema and publishes one
+dashboard there. Nothing is created in the assessed workspaces: they only get read (GET) calls.
 
-- **Credentials.** The tool never stores or handles credentials itself: authentication is the Databricks SDK's
-  (`--profile`, environment variables, OAuth). Prefer an OAuth service principal over a personal access token.
-- **No secret or token values are read.** The tool only needs secret *scope names* (from `{{secrets/...}}`
-  references and `dbutils.secrets.get` calls). Notebook source is read into memory to find them and is not
-  stored. The token API returns token metadata, never token values.
-- **The output is sensitive.** `<catalog>.<schema>` holds admins' emails, PAT IDs and comments, ACLs, user agents and
-  the objects they use. Limit `SELECT` on the schema, and `CAN_VIEW` on the dashboard, to the people running the
-  migration. The dashboard is published without embedded credentials, so viewers only see what they can query.
-- **What the read-only guard is, and isn't.** `readonly.py` checks every request the SDK sends and refuses
-  anything outside the allowed reads and the output schema/dashboard. That protects you from mistakes in the
-  tool. It isn't a sandbox: it only holds for unmodified code, so review changes before you run them.
-- **SQL.** Values written to the result tables are escaped as SQL literals and every write is re-checked against
-  the allowed statement forms. `--catalog` and `--schema` must not contain backticks.
-- **Reporting a problem.** Please open an issue without workspace URLs, IDs or names, or contact the maintainer
-  directly for anything sensitive.
+Placeholders used below: `<results URL>` is the results workspace, `<SP id>` is the SP's application (client) ID,
+`<catalog>` and `<warehouse id>` are in the results workspace.
 
-## Tests
+### 1. Choose the results workspace
+
+Pick one workspace to host the job, the results and the dashboard. It must be in the **same account and region**
+as the workspaces you assess (the audit log is regional) and have **serverless jobs** enabled, with access to PyPI
+to install the tool's dependencies. You need a catalog there for the results (access to it should be restricted)
+and a SQL warehouse; a 2X-Small serverless warehouse is enough.
+
+### 2. Create the service principal (account admin)
+
+Use the SP that will **stay workspace admin after the migration**: the job keeps the SP it runs as.
+
+1. Account console → **User management → Service principals → Add service principal** (skip if you have one).
+2. Account console → **Workspaces** → each workspace you assess → **Permissions** → add the SP as **Admin**.
+3. Same for the results workspace, as **User** (or Admin if you also assess it).
+4. Open the SP → **Credentials & secrets** → **Generate secret**. Copy the secret; it's shown once.
+5. Open the SP → **Permissions** → give yourself the **Service principal: User** role, so you can deploy a job
+   that runs as it.
+
+### 3. Store the secret in the results workspace
+
+The job reads the SP's secret from a secret scope to reach the other workspaces. Only the SP and you (the scope's
+manager) should be able to read it.
 
 ```bash
-.venv/bin/python -m pytest -q
+databricks auth login --host <results URL> --profile w1
+databricks secrets create-scope admin_to_power_user -p w1
+databricks secrets put-secret admin_to_power_user sp-oauth-secret -p w1     # paste the secret when prompted
+databricks secrets put-acl admin_to_power_user <SP id> READ -p w1
+databricks secrets list-acls admin_to_power_user -p w1                       # expect only you (MANAGE) and the SP (READ)
 ```
 
-## Assumptions to verify in your environment
+OAuth secrets expire. Before yours does, generate a new one and run `put-secret` again.
 
-- **Audit names**: the service, action and parameter names in `usage.py` (`TOUCH_RULES`, `UC_ACTIONS`) and
-  in `DEFAULT_ADMIN_ONLY_ACTIONS` (`config.py`) follow the audit log reference. Check them with
-  `SELECT DISTINCT service_name, action_name FROM system.access.audit`.
-- **Required levels**: the levels a run_as identity needs are in `model/levels.py` (`RUN_AS_REQUIRED`, e.g.
-  existing cluster = `CAN_RESTART`). Tune them if your jobs only attach to running clusters.
-- **Token usage permission**: if the token permission lists only `admins`, the tool can't tell whether
-  non-admins can use PATs. Token deltas are then reported as risks, not breaks, with a warning.
-- **Implicit UC privileges** (workspaces enabled for UC automatically) don't show up in grants. The tool infers them from
-  successful UC `create*` actions in the audit log.
-- **Publisher of AI/BI dashboards**: the API doesn't expose who published a dashboard, so dashboards in an admin's home folder stand in for it.
-- **Notebook scanning** is a best-effort regex. `secrets:getSecret` in the audit log is the reliable signal.
-- **Name/path matching** relies on what the tool can list. Clusters, policies, pools, warehouses, jobs,
-  pipelines and secret scopes are listed in full, so a name that matches nothing is reported as NOT_FOUND. Folder
-  (`path`) grants are checked against the notebooks and files that something in scope actually uses.
-- **One target workspace per run.** Run the tool once for each workspace. Results from several targets can go to
-  one results workspace (`--home-profile`).
-- **Identity**: run it as an identity with workspace admin on the target (ideally the admin SP), with `SELECT` on
-  `system.access.audit` and `system.lakeflow.*` for the usage data, `USE CATALOG` + `CREATE SCHEMA` (or
-  `USE SCHEMA` + `CREATE TABLE` + `MODIFY`) on the output, and `CAN_USE` on the warehouse. With
-  `--home-profile`, everything except workspace admin is needed in the results workspace, not in the target.
-- **Not covered yet**: legacy Hive metastore table ACLs, serving endpoints, apps, MLflow experiments/models
-  (add a collector that emits `Dependency` rows; the simulator and recommender are generic).
+### 4. Grant the SP access in the results workspace
+
+In the SQL editor, as the catalog owner or a metastore admin:
+
+```sql
+GRANT USE CATALOG, CREATE SCHEMA ON CATALOG <catalog> TO `<SP id>`;
+GRANT USE CATALOG ON CATALOG system TO `<SP id>`;
+GRANT USE SCHEMA, SELECT ON SCHEMA system.access TO `<SP id>`;
+GRANT USE SCHEMA, SELECT ON SCHEMA system.lakeflow TO `<SP id>`;
+```
+
+Then let it use the warehouse:
+
+```bash
+databricks warehouses update-permissions <warehouse id> -p w1 \
+  --json '{"access_control_list": [{"service_principal_name": "<SP id>", "permission_level": "CAN_USE"}]}'
+```
+
+### 5. Get the code and fill in the variables
+
+You need the [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) and
+[uv](https://docs.astral.sh/uv/) (the deploy builds the tool's wheel with it).
+
+```bash
+git clone <this repository> && cd admin_to_power_user
+mkdir -p .databricks/bundle/default
+cp config/job-variables.example.json .databricks/bundle/default/variable-overrides.json
+```
+
+Edit `.databricks/bundle/default/variable-overrides.json`. The CLI reads it on every deploy, and git ignores it,
+so your workspace URLs and IDs stay out of the repository:
+
+```json
+{
+  "workspaces": "[\"1111111111111111\", \"2222222222222222\"]",
+  "admin_sp_application_id": "<SP id>",
+  "catalog": "<catalog>",
+  "warehouse_id": "<warehouse id>"
+}
+```
+
+`workspaces` is a JSON list, written as a string, of **workspace IDs** (the number after `?o=` in the workspace's
+URL, also shown in the account console) or workspace URLs; you can mix both. The job looks up each ID's URL in
+`system.access.workspaces_latest`, which the SP can read after step 4. Start with one non-production workspace.
+Optional variables (add them to the same file only to change the default):
+
+| Variable | Default | Change it to |
+|---|---|---|
+| `schema` | `admin_to_power_user` | use another schema name |
+| `secret_scope`, `secret_key` | `admin_to_power_user`, `sp-oauth-secret` | match the names you used in step 3 |
+| `mode` | `overwrite` | `append` to keep every run, e.g. to track progress over weeks |
+| `concurrency` | `1` | `2`–`4` to assess many workspaces faster |
+| `schedule_status` | `PAUSED` | `UNPAUSED` to run every Monday at 06:00 UTC |
+
+Also review the permission set you plan to give `power_users`, in `config/power_users.yaml`. The job uses it.
+
+### 6. Deploy and run
+
+```bash
+databricks bundle validate -p w1                  # checks the configuration
+databricks bundle deploy -p w1                    # builds the wheel and creates the job
+databricks bundle run admin_to_power_user -p w1   # one run over every workspace in the list
+```
+
+The command prints a link to the run. There is one `assess` iteration per workspace: a workspace that fails
+doesn't stop the others, and the dashboard is published at the end either way. If your network only reaches PyPI
+through a mirror, set `UV_DEFAULT_INDEX=<mirror URL>` before deploying.
+
+### 7. Open and share the dashboard
+
+The dashboard, **Admin to power_users readiness**, is in `/Users/<SP id>/admin_to_power_user` in the results
+workspace. Each viewer, **including you**, needs `CAN_VIEW` on it (a workspace admin can share it, since the folder belongs
+to the SP), `USE CATALOG`/`USE SCHEMA` and `SELECT` on `<catalog>.<schema>`, and `CAN_USE` on the warehouse. The SP
+creates the schema and owns it, so even the catalog owner has to grant themselves `SELECT`:
+
+```sql
+GRANT USE SCHEMA, SELECT ON SCHEMA <catalog>.admin_to_power_user TO `<you or a viewers group>`;
+```
+
+Keep this list short: the results include admins' emails, PAT IDs and ACLs.
+
+### Changing it later
+
+Edit `variable-overrides.json` (add or remove workspaces, turn on the schedule) or `config/power_users.yaml`, then
+run `databricks bundle deploy -p w1` again. Don't edit the job in the UI: the next deploy overwrites it.
+
+To deploy from CI instead of your machine (recommended once it's set up, see [SECURITY.md](SECURITY.md)), set the
+same values as `BUNDLE_VAR_<name>` pipeline variables, for example `BUNDLE_VAR_catalog`, and run
+`databricks bundle deploy`.
+
+## Output
+
+Tables in `<catalog>.<schema>`: the main ones are `readiness_summary`, `deltas` (what breaks), `recommendations`,
+`action_plan` and `permission_set_coverage`. There is one dashboard, "Admin to power_users readiness". The output
+contains admins' emails and ACLs, so limit who can read it. See [docs/reference.md](docs/reference.md#outputs).
+
+## Documentation
+
+- [docs/reference.md](docs/reference.md): CLI options, how it works, output tables, what the job runs, assumptions to verify
+- [SECURITY.md](SECURITY.md): credentials, what the read-only guard covers, how to report a problem
+
+## Development
+
+```bash
+uv pip install -e ".[dev]"
+.venv/bin/python -m pytest -q
+```
 
 ## License
 

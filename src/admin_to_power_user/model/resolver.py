@@ -16,7 +16,8 @@ from admin_to_power_user.models import ADMINS_GROUP, AclEntry
 PATH_TYPES = {"notebooks", "files", "directories", "repos"}
 
 
-def _under(path: str, prefix: str) -> bool:
+def under(path: str, prefix: str) -> bool:
+    """True if `path` is `prefix` or below it."""
     return prefix == "/" or path == prefix or path.startswith(prefix.rstrip("/") + "/")
 
 
@@ -34,7 +35,6 @@ class WhatIf:
 
 @dataclass(frozen=True)
 class Scenario:
-    name: str
     implicit_admin: bool
     exclude_groups: frozenset[str] = frozenset()
     extra_groups: frozenset[str] = frozenset()
@@ -42,12 +42,11 @@ class Scenario:
 
 
 def before_scenario() -> Scenario:
-    return Scenario(name="before", implicit_admin=True)
+    return Scenario(implicit_admin=True)
 
 
 def after_scenario(power_users_group: str, what_if: Optional[WhatIf] = None) -> Scenario:
     return Scenario(
-        name="after",
         implicit_admin=False,
         exclude_groups=frozenset({ADMINS_GROUP}),
         extra_groups=frozenset({power_users_group}),
@@ -82,7 +81,7 @@ class Resolver:
                     levels.append(g_level)
             if object_type in PATH_TYPES and scenario.what_if.path_grants:
                 path = self.object_names.get((object_type, object_id), "")
-                levels += [lv for prefix, lv in scenario.what_if.path_grants if path and _under(path, prefix)]
+                levels += [lv for prefix, lv in scenario.what_if.path_grants if path and under(path, prefix)]
         return max_level(object_type, levels)
 
     def entitlements(self, key: str, scenario: Scenario) -> set[str]:

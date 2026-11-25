@@ -1,6 +1,5 @@
 """Retained admins (SP / group), the supplied power_users permission set, and the read-only guard."""
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -23,8 +22,6 @@ BOB = "user:bob@contoso.com"
 
 def _rebuild(snapshot, cfg):
     """Re-run identity resolution on the conftest workspace with a different config."""
-    from conftest import _cv  # noqa: F401  (fixture helpers)
-
     s = Snapshot(snapshot.workspace_id, snapshot.workspace_host)
     s.principals, s.memberships = snapshot.principals, snapshot.memberships
     from admin_to_power_user.collectors.identities import resolve_retained
@@ -44,6 +41,23 @@ def test_retained_group_keeps_its_members_admin(snapshot):
     assert BOB not in s.in_scope  # bob is admin via `platform`, which stays admin
     assert ALICE in s.in_scope
     assert any("human(s) stay workspace admin" in w for w in s.warnings)
+
+
+def test_inactive_admin_stays_in_scope_and_is_flagged():
+    from databricks.sdk.service import iam
+
+    from conftest import _cv
+
+    users = [iam.User(id="u1", user_name="alice@contoso.com", active=False),
+             iam.User(id="u2", user_name="bob@contoso.com", active=True)]
+    sps = [iam.ServicePrincipal(id="s1", application_id="sp-admin", active=True)]
+    groups = [iam.Group(id="g1", display_name="admins",
+                        members=[_cv("u1"), _cv("u2"), _cv("s1")])]
+    s = Snapshot("1", "https://x")
+    build_identities(users, sps, groups, s, Config(retained_admins=[RetainedAdmin("auto", "sp-admin")]))
+    assert s.in_scope[ALICE] == "human workspace admin (inactive account)"
+    assert s.in_scope[BOB] == "human workspace admin"
+    assert any("1 inactive account(s)" in w and "alice@contoso.com" in w for w in s.warnings)
 
 
 def test_retained_sp_by_scim_id_and_unknown_warns(snapshot):
@@ -189,6 +203,42 @@ def test_make_read_only_blocks_before_sending():
     assert len(sent) == 1
 
 
+def test_guard_holds_for_real_sdk_calls(monkeypatch):
+    """The guard wraps ApiClient.do. If an SDK version ever sent requests another way, writes would get through:
+    drive real SDK methods and fail if anything other than a GET reaches the network."""
+    import requests
+    from databricks.sdk import WorkspaceClient
+    from databricks.sdk.service import iam
+
+    sent = []
+
+    def send(self, request, **kwargs):
+        sent.append(request.method + " " + request.url)
+        response = requests.Response()
+        response.status_code, response._content = 200, b"{}"
+        response.headers["Content-Type"] = "application/json"
+        response.request = request
+        return response
+
+    monkeypatch.setattr(requests.Session, "send", send)
+    w = make_read_only(WorkspaceClient(host="https://adb-1.1.azuredatabricks.net", token="not-a-real-token"))
+    writes = [
+        lambda: w.clusters.permanent_delete("c1"),
+        lambda: w.jobs.run_now(1),
+        lambda: w.permissions.set("clusters", "c1", access_control_list=[
+            iam.AccessControlRequest(group_name="users", permission_level=iam.PermissionLevel.CAN_MANAGE)]),
+        lambda: w.workspace.delete("/Users/x"),
+        lambda: w.secrets.put_secret("s", "k", string_value="v"),
+        lambda: w.statement_execution.execute_statement(statement="DROP TABLE main.x.y", warehouse_id="wh"),
+    ]
+    for write in writes:
+        with pytest.raises(ReadOnlyViolation):
+            write()
+    w.clusters.get("c1")
+    assert all(r.startswith("GET ") for r in sent), sent  # the SDK's own config discovery is a GET too
+    assert any(r.endswith("/api/2.1/clusters/get?cluster_id=c1") for r in sent), sent
+
+
 def test_target_client_without_sql_only_reads():
     check_request("GET", "/api/2.1/jobs/list", None, allow_sql=False)
     with pytest.raises(ReadOnlyViolation, match="target workspace"):
@@ -217,17 +267,37 @@ def test_every_usage_query_passes_the_guard(snapshot):
     assert len(seen) == 6 and not snapshot.warnings
 
 
+def test_workspace_name_comes_from_the_system_table_else_the_host(snapshot):
+    from admin_to_power_user.collectors.identities import NameResolver
+
+    class Names:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def query(self, sql):
+            assert is_read_only_sql(sql) and "system.access.workspaces_latest" in sql
+            return self.rows
+
+    assert Usage(Names([{"workspace_name": "Sales prod"}]), snapshot, NameResolver(snapshot), 90) \
+        .workspace_name() == "Sales prod"
+    assert Usage(Names([]), snapshot, NameResolver(snapshot), 90).workspace_name() == ""
+    assert cli.workspace_label(Snapshot("1", "https://adb-1.1.azuredatabricks.net/")) == "adb-1.1.azuredatabricks.net"
+    named = Snapshot("1", "https://adb-1.1.azuredatabricks.net")
+    named.workspace_name = "Sales prod"
+    assert cli.workspace_label(named) == "Sales prod"
+
+
 # ---- end to end with the new inputs ----------------------------------------------------------
 
-def test_cli_with_admin_client_id_and_permission_file(tmp_path, monkeypatch, capsys, output):
+def test_cli_with_admin_and_structured_permission_file(tmp_path, monkeypatch, capsys, output):
     from test_end_to_end import fake_workspace
 
-    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile, **k: fake_workspace())
+    monkeypatch.setattr(cli, "workspace_client", lambda host, profile, **k: fake_workspace())
     perms = tmp_path / "perms.yaml"
     perms.write_text("entitlements: [databricks-sql-access]\n"
                      "grants:\n  - {object_type: clusters, object_name: shared, level: CAN_RESTART}\n"
                      "  - {object_type: secret-scopes, object_id: prod, level: READ}\n")
-    rc = cli.main(["analyze", "--admin-client-id", "sp-admin", "--permissions", str(perms), "--workspace-id", "1",
+    rc = cli.main(["--admin", "sp-admin", "--permissions", str(perms), "--workspace", "1",
                    "--catalog", "c", "--schema", "s"])
     assert rc == 0
     load = lambda t: output[t]  # noqa: E731
@@ -253,9 +323,9 @@ def test_cli_refuses_backticks_in_output_names(monkeypatch):
 def test_cli_refuses_wrong_workspace_id(tmp_path, monkeypatch):
     from test_end_to_end import fake_workspace
 
-    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile, **k: fake_workspace())
-    with pytest.raises(SystemExit, match="--workspace-id"):
-        cli.main(["analyze", "--admin-client-id", "sp-admin", "--workspace-id", "999", "--catalog", "c", "--schema", "s"])
+    monkeypatch.setattr(cli, "workspace_client", lambda host, profile, **k: fake_workspace())
+    with pytest.raises(SystemExit, match="but --workspace is 999"):
+        cli.main(["--admin", "sp-admin", "--workspace", "999", "--catalog", "c", "--schema", "s"])
 
 
 def _fake(me="alice@contoso.com", warehouses=()):
@@ -269,9 +339,9 @@ def _fake(me="alice@contoso.com", warehouses=()):
 
 
 def test_cli_needs_admin_when_run_by_a_human(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile, **k: _fake())
+    monkeypatch.setattr(cli, "workspace_client", lambda host, profile, **k: _fake())
     with pytest.raises(SystemExit, match="--admin"):
-        cli.main(["analyze", "--catalog", "c", "--schema", "s"])
+        cli.main(["--catalog", "c", "--schema", "s"])
 
 
 def test_cli_defaults_admin_to_running_sp_and_needs_no_other_input(tmp_path, monkeypatch, capsys, output):
@@ -279,8 +349,8 @@ def test_cli_defaults_admin_to_running_sp_and_needs_no_other_input(tmp_path, mon
     w = _fake(me=sp)
     w.service_principals = SimpleNamespace(list=lambda **k: iter([
         __import__("databricks.sdk.service.iam", fromlist=["x"]).ServicePrincipal(id="s9", application_id=sp)]))
-    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile, **k: w)
-    assert cli.main(["analyze", "--catalog", "c", "--schema", "s"]) == 0
+    monkeypatch.setattr(cli, "workspace_client", lambda host, profile, **k: w)
+    assert cli.main(["--catalog", "c", "--schema", "s"]) == 0
     out = capsys.readouterr().out
     assert f"keeping {sp}" in out and "no permission set given" in out
     assert output["_dashboard"][0] == f"/Users/{sp}"
@@ -333,6 +403,19 @@ def test_suggested_file_round_trips(snapshot, tmp_path):
     assert "# Also needed, but scope creep" in f.read_text()
 
 
+def test_suggested_file_quotes_ids_with_spaces(tmp_path):
+    from admin_to_power_user.config import load_permission_file
+    from admin_to_power_user.consolidator import suggested_permissions_yaml
+    from admin_to_power_user.models import ProposedGrant
+    from admin_to_power_user.permission_set import PermissionSet
+
+    grant = ProposedGrant("1", "warehouses", "wh 1", "Shared WH", "CAN_USE", 1, "alice@contoso.com", "HIGH", False)
+    f = tmp_path / "s.yaml"
+    f.write_text(suggested_permissions_yaml(PermissionSet(), [grant]))
+    [g] = load_permission_file(str(f)).grants
+    assert (g.object_type, g.object_name, g.level) == ("warehouses", "wh 1", "CAN_USE")
+
+
 def test_pick_warehouse_prefers_running_then_serverless():
     from databricks.sdk.service.sql import EndpointInfo, State
 
@@ -353,7 +436,7 @@ def test_build_identities_uses_retained_admins(snapshot):
 
 
 def test_assume_moved_flag_removes_that_jobs_breaks(tmp_path, monkeypatch, output):
-    monkeypatch.setattr(cli, "workspace_client", lambda cfg, host, profile, **k: _fake())
+    monkeypatch.setattr(cli, "workspace_client", lambda host, profile, **k: _fake())
     assert cli.main(["--admin", "sp-admin", "--assume-moved", "job:101", "--catalog", "c", "--schema", "s"]) == 0
     deltas = output["deltas"]
     assert not [d for d in deltas if d["artifact_id"] == "101"]

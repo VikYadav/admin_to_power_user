@@ -1,6 +1,6 @@
 """Run settings. Everything has a default; the command-line flags set what users need.
 
-The only file the tool reads is the power_users permission set (--permissions, see config/power_users.yaml).
+The only file you supply is the power_users permission set (--permissions, see config/power_users.yaml).
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ class Config:
     retained_admins: list[RetainedAdmin] = field(default_factory=list)
     permission_set: PermissionSet = field(default_factory=PermissionSet)
     workspace_host: Optional[str] = None
-    workspace_id: Optional[str] = None  # if set, the run aborts unless the target has this id
+    workspace_id: Optional[str] = None  # from --workspace <ID>: the run aborts unless the target has this id
     lookback_days: int = 90
     high_usage_threshold: int = 10
     token_recent_days: int = 30
@@ -70,9 +70,6 @@ class Config:
     @property
     def power_users_key(self) -> str:
         return f"group:{self.power_users_group}"
-
-    def all_retained(self) -> list[RetainedAdmin]:
-        return list(self.retained_admins)
 
 
 MOVED_TYPES = {"job", "pipeline", "token", "query"}

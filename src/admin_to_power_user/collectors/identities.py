@@ -56,13 +56,20 @@ def build_identities(
     admins = graph.members_of(ADMINS_GROUP)
     snapshot.retained_admins = resolve_retained(snapshot, cfg, graph, admins)
     excluded = set(snapshot.retained_admins)
+    inactive: list[str] = []
     for member in sorted(admins):
         if member in excluded:
             continue
         p = snapshot.principals.get(member)
         reason = "human workspace admin" if p is None or p.kind == "user" else \
             "service principal admin that is not a retained admin"
+        if p is not None and not p.active:  # still analysed like any other admin; only flagged
+            reason += " (inactive account)"
+            inactive.append(member.split(":", 1)[1])
         snapshot.in_scope[member] = reason
+    if inactive:
+        snapshot.warnings.append(f"{len(inactive)} inactive account(s) are still in admins and are included in the "
+                                 f"results: {', '.join(inactive[:10])}{' ...' if len(inactive) > 10 else ''}")
 
     pu = cfg.power_users_key
     if pu not in snapshot.principals:
@@ -77,7 +84,7 @@ def resolve_retained(snapshot: Snapshot, cfg: Config, graph: PrincipalGraph, adm
     """Principal keys that stay workspace admin (retained SPs/users, and every member of retained groups)."""
     out: dict[str, str] = {}
     by_scim = {p.scim_id: k for k, p in snapshot.principals.items()}
-    for r in cfg.all_retained():
+    for r in cfg.retained_admins:
         if r.kind == "auto":
             key = next((k for k in (sp_key(r.ref), group_key(r.ref), by_scim.get(r.ref), user_key(r.ref))
                         if k in snapshot.principals), None)

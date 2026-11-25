@@ -1,0 +1,62 @@
+# Runs admin_to_power_user as a job in this (home) workspace, as the admin service principal, against a list of
+# target workspaces. Results for all of them go to one schema and one dashboard here; nothing is created in the
+# targets. Setup and usage: README, "Run as a scheduled job".
+#
+#   cp config/job-variables.example.json .databricks/bundle/default/variable-overrides.json   # then fill it in
+#   databricks bundle deploy -p <home profile>
+#   databricks bundle run admin_to_power_user -p <home profile>
+#
+# In CI, set the same values as BUNDLE_VAR_<name> environment variables instead.
+
+bundle:
+  name: admin_to_power_user
+
+include:
+  - resources/*.yml
+
+artifacts:
+  wheel:
+    type: whl
+    build: uv build --wheel
+    path: .
+
+variables:
+  workspaces:
+    description: 'JSON list of target workspace IDs or URLs, e.g. ["1111111111111111", "https://adb-222.2.azuredatabricks.net"]'
+  admin_sp_application_id:
+    description: Application (client) ID of the admin service principal the job runs as
+  catalog:
+    description: Catalog for the result tables (must exist)
+  schema:
+    description: Schema for the result tables (created if missing)
+    default: admin_to_power_user
+  warehouse_id:
+    description: SQL warehouse in this workspace for system tables, result tables and the dashboard
+  secret_scope:
+    description: Secret scope in this workspace holding the SP's Databricks OAuth secret (only the SP may read it)
+    default: admin_to_power_user
+  secret_key:
+    description: Key of the SP's OAuth secret in that scope
+    default: sp-oauth-secret
+  mode:
+    description: overwrite (keep only the latest run per workspace) or append (keep every run)
+    default: overwrite
+  concurrency:
+    description: Workspaces assessed at the same time
+    default: 1
+  schedule_status:
+    description: PAUSED (default) or UNPAUSED for the weekly run (Mondays 06:00 UTC)
+    default: PAUSED
+
+run_as:
+  service_principal_name: ${var.admin_sp_application_id}
+
+# The job runs this code as the admin SP, so it must not be writable by anyone else. The files stay under the
+# deployer's home (the default root path); the SP only gets read access to them.
+permissions:
+  - service_principal_name: ${var.admin_sp_application_id}
+    level: CAN_VIEW
+
+targets:
+  default:
+    default: true

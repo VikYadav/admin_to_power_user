@@ -117,3 +117,24 @@ def test_usage_maps_audit_rows(snapshot):
 def test_sql_literals_are_escaped():
     assert lit("o'brien") == "'o\\'brien'"
     assert in_list([]) == "(NULL)"
+
+
+def test_unreadable_pipeline_is_a_warning_not_a_lost_collector():
+    from types import SimpleNamespace
+
+    from admin_to_power_user.collectors.pipelines import collect_pipelines
+
+    def get(pipeline_id):
+        if pipeline_id == "bad":
+            raise RuntimeError("boom")
+        return SimpleNamespace(spec=pipelines.PipelineSpec(name="ok", serverless=True,
+                                                           configuration={"k": "{{secrets/kv/x}}"}))
+
+    listed = [pipelines.PipelineStateInfo(pipeline_id=i, name=i, run_as_user_name="alice@contoso.com")
+              for i in ("bad", "good")]
+    w = SimpleNamespace(pipelines=SimpleNamespace(list_pipelines=lambda: iter(listed), get=get))
+    s = Snapshot("1", "https://x")
+    s.in_scope[P] = "human workspace admin"
+    collect_pipelines(w, s, SimpleNamespace(key=lambda name: f"user:{name}"))
+    assert [(d.object_type, d.object_id) for d in s.dependencies] == [("secret-scopes", "kv")]
+    assert len(s.warnings) == 1 and "bad (RuntimeError)" in s.warnings[0]

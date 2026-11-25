@@ -1,0 +1,74 @@
+resources:
+  jobs:
+    admin_to_power_user:
+      name: admin_to_power_user readiness
+      description: >-
+        Predicts what breaks when workspace admins move to power_users, for every workspace in
+        var.workspaces. Read-only on the targets; results in ${var.catalog}.${var.schema} and one dashboard here.
+      max_concurrent_runs: 1
+      schedule:  # weekly, to track progress; turn it on with var.schedule_status
+        quartz_cron_expression: "0 0 6 ? * MON"
+        timezone_id: UTC
+        pause_status: ${var.schedule_status}
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - ../dist/*.whl
+
+      tasks:
+        # One iteration per target workspace: a failure in one doesn't stop the others.
+        - task_key: assess
+          for_each_task:
+            inputs: ${var.workspaces}
+            concurrency: ${var.concurrency}
+            task:
+              task_key: assess_workspace
+              environment_key: default
+              python_wheel_task:
+                package_name: admin_to_power_user
+                entry_point: admin-to-power-user
+                parameters:
+                  - --workspace
+                  - "{{input}}"
+                  - --home-current
+                  - --target-client-id
+                  - ${var.admin_sp_application_id}
+                  - --target-secret-scope
+                  - ${var.secret_scope}
+                  - --target-secret-key
+                  - ${var.secret_key}
+                  - --catalog
+                  - ${var.catalog}
+                  - --schema
+                  - ${var.schema}
+                  - --warehouse-id
+                  - ${var.warehouse_id}
+                  - --mode
+                  - ${var.mode}
+                  - --permissions
+                  - ${workspace.file_path}/config/power_users.yaml
+                  - --no-dashboard
+
+        # Publish the dashboard once, even if some workspaces failed.
+        - task_key: publish_dashboard
+          depends_on:
+            - task_key: assess
+          run_if: ALL_DONE
+          environment_key: default
+          python_wheel_task:
+            package_name: admin_to_power_user
+            entry_point: admin-to-power-user
+            parameters:
+              - --home-current
+              - --catalog
+              - ${var.catalog}
+              - --schema
+              - ${var.schema}
+              - --warehouse-id
+              - ${var.warehouse_id}
+              - --dashboard-folder
+              - /Users/${var.admin_sp_application_id}/admin_to_power_user
+              - --dashboard-only

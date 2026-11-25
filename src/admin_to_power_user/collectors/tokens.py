@@ -30,7 +30,6 @@ def collect_tokens(w: WorkspaceClient, snapshot: Snapshot, names: NameResolver) 
             "token_id": t.token_id,
             "owner_key": owner,
             "comment": t.comment,
-            "created": _iso_day(t.creation_time),
             "expiry": _iso_day(t.expiry_time) or "never",
             "last_used": _iso_day(t.last_used_day),
         })
